@@ -23,14 +23,14 @@ class MoveAlongArc(Node):
 
     def generate_arc_points(self):
         points = []
-        radius = 0.1  # 10cm
-        center_y = 0.35
-        center_z = 0.35
+        radius = 0.05  # 10cm
+        center_y = 0.4
+        center_z = 0.4
         x = 0.0
 
         start_angle = math.radians(0)
         end_angle = math.radians(90)
-        steps = 10
+        steps = 5
 
         for i in range(steps + 1):
             theta = start_angle + (end_angle - start_angle) * i / steps
