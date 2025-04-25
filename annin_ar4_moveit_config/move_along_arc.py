@@ -101,8 +101,8 @@ class MoveAlongArc(Node):
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
         req.group_name = 'ar_manipulator'
-        req.max_velocity_scaling_factor = 0.2
-        req.max_acceleration_scaling_factor = 0.2
+        req.max_velocity_scaling_factor = 0.3
+        req.max_acceleration_scaling_factor = 0.3
 
         # --- Position Constraint ---
         position_constraint = PositionConstraint()
