@@ -4,69 +4,41 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 
-import math
-from geometry_msgs.msg import PoseStamped
 from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint
+from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
+from geometry_msgs.msg import PoseStamped
 from shape_msgs.msg import SolidPrimitive
 
-class MoveAlongArc(Node):
+class MoveToTarget(Node):
     def __init__(self):
-        super().__init__('move_along_arc_client')
+        super().__init__('move_to_target_client')
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
-        self.arc_points = self.generate_arc_points()
-        self.current_index = 0
+        self.send_goal()
 
-        self.get_logger().info('Waiting for MoveGroup action server...')
+    def send_goal(self):
+        self.get_logger().info('Waiting for action server...')
         self._action_client.wait_for_server()
-        self.send_next_goal()
-
-    def generate_arc_points(self):
-        points = []
-        radius = 0.1  # 10cm
-        center_y = 0.2
-        center_z = 0.2
-        x = 0.0
-
-        start_angle = math.radians(0)
-        end_angle = math.radians(90)
-        steps = 10
-
-        for i in range(steps + 1):
-            theta = start_angle + (end_angle - start_angle) * i / steps
-            y = center_y + radius * math.cos(theta)
-            z = center_z + radius * math.sin(theta)
-
-            pose = PoseStamped()
-            pose.header.frame_id = 'base_link'
-            pose.pose.position.x = x
-            pose.pose.position.y = y
-            pose.pose.position.z = z
-
-            pose.pose.orientation.x = 0.0
-            pose.pose.orientation.y = 0.0
-            pose.pose.orientation.z = 0.0
-            pose.pose.orientation.w = 1.0
-
-            points.append(pose)
-        return points
-
-    def send_next_goal(self):
-        if self.current_index >= len(self.arc_points):
-            self.get_logger().info('✅ All arc points executed!')
-            rclpy.shutdown()
-            return
-
-        pose = self.arc_points[self.current_index]
-        self.get_logger().info(f'▶️ Sending point {self.current_index + 1}/{len(self.arc_points)}')
 
         goal_msg = MoveGroup.Goal()
+
+        # MoveIt用のリクエストを作成
         req = MotionPlanRequest()
         req.group_name = 'ar_manipulator'
-        req.max_velocity_scaling_factor = 0.2
-        req.max_acceleration_scaling_factor = 0.2
+        req.max_velocity_scaling_factor = 0.3
+        req.max_acceleration_scaling_factor = 0.3
 
-        # --- Position Constraint のみ ---
+        # ゴール姿勢を定義
+        pose = PoseStamped()
+        pose.header.frame_id = 'base_link'
+        pose.pose.position.x = -0.007
+        pose.pose.position.y = -0.328
+        pose.pose.position.z = 0.475
+        pose.pose.orientation.x = 0.0
+        pose.pose.orientation.y = 0.0
+        pose.pose.orientation.z = 0.0
+        pose.pose.orientation.w = 1.0  # 無回転
+
+        # --- Position Constraint ---
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = pose.header.frame_id
         position_constraint.link_name = 'ee_link'
@@ -74,39 +46,54 @@ class MoveAlongArc(Node):
         position_constraint.target_point_offset.y = 0.0
         position_constraint.target_point_offset.z = 0.0
 
+        # ボックスで制約領域を定義（小さめに設定）
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
-        box.dimensions = [0.01, 0.01, 0.01]
+        box.dimensions = [0.01, 0.01, 0.01]  # 1cm の精度で位置合わせ
+
         position_constraint.constraint_region.primitives.append(box)
         position_constraint.constraint_region.primitive_poses.append(pose.pose)
 
+        # --- Orientation Constraint ---
+        orientation_constraint = OrientationConstraint()
+        orientation_constraint.header.frame_id = pose.header.frame_id
+        orientation_constraint.link_name = 'ee_link'
+        orientation_constraint.orientation = pose.pose.orientation
+        orientation_constraint.absolute_x_axis_tolerance = 0.1
+        orientation_constraint.absolute_y_axis_tolerance = 0.1
+        orientation_constraint.absolute_z_axis_tolerance = 0.1
+        orientation_constraint.weight = 1.0
+
+        # --- Combine Constraints ---
         goal_constraints = Constraints()
         goal_constraints.position_constraints.append(position_constraint)
+        goal_constraints.orientation_constraints.append(orientation_constraint)
+
         req.goal_constraints.append(goal_constraints)
         goal_msg.request = req
 
+        self.get_logger().info('Sending goal...')
         self._send_goal_future = self._action_client.send_goal_async(goal_msg)
         self._send_goal_future.add_done_callback(self.goal_response_callback)
 
     def goal_response_callback(self, future):
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error('❌ Goal rejected')
-            rclpy.shutdown()
+            self.get_logger().error('❌ Goal rejected by server.')
             return
-        self.get_logger().info('✅ Goal accepted')
+
+        self.get_logger().info('✅ Goal accepted, waiting for result...')
         self._get_result_future = goal_handle.get_result_async()
         self._get_result_future.add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
         result = future.result().result
-        self.get_logger().info(f'🎯 Result received: {result.error_code}')
-        self.current_index += 1
-        self.send_next_goal()
+        self.get_logger().info(f'🎉 Result received: {result.error_code}')
+        rclpy.shutdown()
 
 def main(args=None):
     rclpy.init(args=args)
-    node = MoveAlongArc()
+    node = MoveToTarget()
     rclpy.spin(node)
 
 if __name__ == '__main__':
