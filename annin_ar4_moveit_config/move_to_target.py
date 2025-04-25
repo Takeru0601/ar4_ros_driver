@@ -7,7 +7,7 @@ from rclpy.action import ActionClient
 import math
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
+from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint
 from shape_msgs.msg import SolidPrimitive
 
 class MoveAlongArc(Node):
@@ -26,11 +26,11 @@ class MoveAlongArc(Node):
         radius = 0.1  # 10cm
         center_y = 0.2
         center_z = 0.2
-        x = 0.0  # yz平面上で動くので x は固定
+        x = 0.0
 
         start_angle = math.radians(0)
         end_angle = math.radians(90)
-        steps = 10  # 10点に分割
+        steps = 10
 
         for i in range(steps + 1):
             theta = start_angle + (end_angle - start_angle) * i / steps
@@ -43,7 +43,6 @@ class MoveAlongArc(Node):
             pose.pose.position.y = y
             pose.pose.position.z = z
 
-            # 姿勢は固定（真上を向いたまま）
             pose.pose.orientation.x = 0.0
             pose.pose.orientation.y = 0.0
             pose.pose.orientation.z = 0.0
@@ -67,7 +66,7 @@ class MoveAlongArc(Node):
         req.max_velocity_scaling_factor = 0.2
         req.max_acceleration_scaling_factor = 0.2
 
-        # --- Position Constraint ---
+        # --- Position Constraint のみ ---
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = pose.header.frame_id
         position_constraint.link_name = 'ee_link'
@@ -81,19 +80,8 @@ class MoveAlongArc(Node):
         position_constraint.constraint_region.primitives.append(box)
         position_constraint.constraint_region.primitive_poses.append(pose.pose)
 
-        # --- Orientation Constraint ---
-        orientation_constraint = OrientationConstraint()
-        orientation_constraint.header.frame_id = pose.header.frame_id
-        orientation_constraint.link_name = 'ee_link'
-        orientation_constraint.orientation = pose.pose.orientation
-        orientation_constraint.absolute_x_axis_tolerance = 0.1
-        orientation_constraint.absolute_y_axis_tolerance = 0.1
-        orientation_constraint.absolute_z_axis_tolerance = 0.1
-        orientation_constraint.weight = 1.0
-
         goal_constraints = Constraints()
         goal_constraints.position_constraints.append(position_constraint)
-        goal_constraints.orientation_constraints.append(orientation_constraint)
         req.goal_constraints.append(goal_constraints)
         goal_msg.request = req
 
