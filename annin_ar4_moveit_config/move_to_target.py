@@ -26,7 +26,7 @@ class MoveAlongArc(Node):
         radius = 0.1  # 10cm
         center_y = 0.2
         center_z = 0.2
-        x = 0.3  # yz平面上で動くので x は固定
+        x = 0.0  # yz平面上で動くので x は固定
 
         start_angle = math.radians(0)
         end_angle = math.radians(90)
