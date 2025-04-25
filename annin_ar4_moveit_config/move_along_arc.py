@@ -24,10 +24,9 @@ class MoveAlongArc(Node):
 
     def generate_arc_points(self):
         points = []
-        radius = 0.05  # 5cm 半径
-        center_x = 0.3
-        center_y = 0.0
-        z = 0.2  # 高さは一定（xy平面）
+        radius = 0.05  # 半径 5cm
+        center = [0.0, -0.35, 0.35]
+        fixed_y = -0.35
 
         start_angle = math.radians(0)
         end_angle = math.radians(90)
@@ -35,16 +34,47 @@ class MoveAlongArc(Node):
 
         for i in range(steps + 1):
             theta = start_angle + (end_angle - start_angle) * i / steps
-            x = center_x + radius * math.cos(theta)
-            y = center_y + radius * math.sin(theta)
+            x = center[0] + radius * math.cos(theta)
+            z = center[2] + radius * math.sin(theta)
+            y = fixed_y
 
-            # 向きベクトル（中心 - 現在位置）
-            dir_x = center_x - x
-            dir_y = center_y - y
-            yaw = math.atan2(dir_y, dir_x)
+            # 中心への方向ベクトル
+            dir_x = center[0] - x
+            dir_y = center[1] - y
+            dir_z = center[2] - z
 
-            # EEのx軸が円の中心を向くようにクォータニオン計算
-            quat = tf_transformations.quaternion_from_euler(0, 0, yaw)
+            # 向きベクトルを正規化
+            norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
+            dir_x /= norm
+            dir_y /= norm
+            dir_z /= norm
+
+            # x軸を dir に向ける姿勢（Z軸前提とせず全方位を考慮）
+            # tf_transformations.look_atの代わりに以下で実装
+            up = [0, 0, 1]  # 上方向ベクトル
+            side = [  # y軸ベクトルを計算（右手系）
+                up[1]*dir_z - up[2]*dir_y,
+                up[2]*dir_x - up[0]*dir_z,
+                up[0]*dir_y - up[1]*dir_x,
+            ]
+            # 再計算: orthogonalなup（z軸）ベクトル
+            new_up = [
+                dir_y*side[2] - dir_z*side[1],
+                dir_z*side[0] - dir_x*side[2],
+                dir_x*side[1] - dir_y*side[0],
+            ]
+
+            rot_matrix = [
+                [dir_x, side[0], new_up[0]],
+                [dir_y, side[1], new_up[1]],
+                [dir_z, side[2], new_up[2]]
+            ]
+            quat = tf_transformations.quaternion_from_matrix([
+                [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
+                [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
+                [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
+                [0, 0, 0, 1]
+            ])
 
             pose = PoseStamped()
             pose.header.frame_id = 'base_link'
