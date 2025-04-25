@@ -5,13 +5,11 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 
 import math
-import numpy as np
+import tf_transformations
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
+from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint
 from shape_msgs.msg import SolidPrimitive
-import tf_transformations
-
 
 class MoveAlongArc(Node):
     def __init__(self):
@@ -26,40 +24,39 @@ class MoveAlongArc(Node):
 
     def generate_arc_points(self):
         points = []
-        radius = 0.05  # 小さめの半径（例: 5cm）
-        center_y = 0.4
-        center_z = 0.4
+        radius = 0.03  # 半径 5cm
+        center_y = 0.3
+        center_z = 0.3
         x = 0.0  # yz平面上で動くので x は固定
 
         start_angle = math.radians(0)
         end_angle = math.radians(90)
-        steps = 5  # 点数調整
+        steps = 5
 
         for i in range(steps + 1):
             theta = start_angle + (end_angle - start_angle) * i / steps
             y = center_y + radius * math.cos(theta)
             z = center_z + radius * math.sin(theta)
 
+            # 中心に向く姿勢を計算（向きベクトル: 中心 - 現在位置）
+            dir_y = center_y - y
+            dir_z = center_z - z
+            norm = math.sqrt(dir_y**2 + dir_z**2)
+            if norm == 0:
+                continue
+            dir_y /= norm
+            dir_z /= norm
+
+            # 回転軸と角度からクォータニオンを生成（X軸を中心方向に向ける）
+            # ロボットのx軸を dir_y, dir_z 方向に回転させると仮定
+            angle = math.atan2(dir_z, dir_y)
+            quat = tf_transformations.quaternion_from_euler(0, 0, angle)  # 回転はZ軸まわり
+
             pose = PoseStamped()
             pose.header.frame_id = 'base_link'
             pose.pose.position.x = x
             pose.pose.position.y = y
             pose.pose.position.z = z
-
-            # 円弧中心を向くように orientation を設定
-            view_vec = np.array([0.0, center_y - y, center_z - z])
-            view_vec = view_vec / np.linalg.norm(view_vec)
-
-            z_axis = np.array([0.0, 0.0, 1.0])
-            rotation_axis = np.cross(z_axis, view_vec)
-            rotation_angle = math.acos(np.dot(z_axis, view_vec))
-
-            if np.linalg.norm(rotation_axis) < 1e-6:
-                quat = [0.0, 0.0, 0.0, 1.0]
-            else:
-                rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
-                quat = tf_transformations.quaternion_about_axis(rotation_angle, rotation_axis)
-
             pose.pose.orientation.x = quat[0]
             pose.pose.orientation.y = quat[1]
             pose.pose.orientation.z = quat[2]
@@ -97,22 +94,12 @@ class MoveAlongArc(Node):
         position_constraint.constraint_region.primitives.append(box)
         position_constraint.constraint_region.primitive_poses.append(pose.pose)
 
-        # --- Orientation Constraint ---
-        orientation_constraint = OrientationConstraint()
-        orientation_constraint.header.frame_id = pose.header.frame_id
-        orientation_constraint.link_name = 'ee_link'
-        orientation_constraint.orientation = pose.pose.orientation
-        orientation_constraint.absolute_x_axis_tolerance = 0.1
-        orientation_constraint.absolute_y_axis_tolerance = 0.1
-        orientation_constraint.absolute_z_axis_tolerance = 0.1
-        orientation_constraint.weight = 1.0
-
         goal_constraints = Constraints()
         goal_constraints.position_constraints.append(position_constraint)
-        goal_constraints.orientation_constraints.append(orientation_constraint)
+        # 姿勢制約は使わない（動的に姿勢を計算してポーズに直接セットしている）
         req.goal_constraints.append(goal_constraints)
-        goal_msg.request = req
 
+        goal_msg.request = req
         self._send_goal_future = self._action_client.send_goal_async(goal_msg)
         self._send_goal_future.add_done_callback(self.goal_response_callback)
 
@@ -131,7 +118,6 @@ class MoveAlongArc(Node):
         self.get_logger().info(f'🎯 Result received: {result.error_code}')
         self.current_index += 1
         self.send_next_goal()
-
 
 def main(args=None):
     rclpy.init(args=args)
