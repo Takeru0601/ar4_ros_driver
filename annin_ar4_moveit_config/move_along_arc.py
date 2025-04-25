@@ -24,10 +24,10 @@ class MoveAlongArc(Node):
 
     def generate_arc_points(self):
         points = []
-        radius = 0.03  # 半径 5cm
-        center_y = -0.3
-        center_z = 0.3
-        x = 0.0  # yz平面上で動くので x は固定
+        radius = 0.05  # 5cm 半径
+        center_x = 0.3
+        center_y = 0.0
+        z = 0.2  # 高さは一定（xy平面）
 
         start_angle = math.radians(0)
         end_angle = math.radians(90)
@@ -35,22 +35,16 @@ class MoveAlongArc(Node):
 
         for i in range(steps + 1):
             theta = start_angle + (end_angle - start_angle) * i / steps
-            y = center_y + radius * math.cos(theta)
-            z = center_z + radius * math.sin(theta)
+            x = center_x + radius * math.cos(theta)
+            y = center_y + radius * math.sin(theta)
 
-            # 中心に向く姿勢を計算（向きベクトル: 中心 - 現在位置）
+            # 向きベクトル（中心 - 現在位置）
+            dir_x = center_x - x
             dir_y = center_y - y
-            dir_z = center_z - z
-            norm = math.sqrt(dir_y**2 + dir_z**2)
-            if norm == 0:
-                continue
-            dir_y /= norm
-            dir_z /= norm
+            yaw = math.atan2(dir_y, dir_x)
 
-            # 回転軸と角度からクォータニオンを生成（X軸を中心方向に向ける）
-            # ロボットのx軸を dir_y, dir_z 方向に回転させると仮定
-            angle = math.atan2(dir_z, dir_y)
-            quat = tf_transformations.quaternion_from_euler(0, 0, angle)  # 回転はZ軸まわり
+            # EEのx軸が円の中心を向くようにクォータニオン計算
+            quat = tf_transformations.quaternion_from_euler(0, 0, yaw)
 
             pose = PoseStamped()
             pose.header.frame_id = 'base_link'
@@ -96,7 +90,6 @@ class MoveAlongArc(Node):
 
         goal_constraints = Constraints()
         goal_constraints.position_constraints.append(position_constraint)
-        # 姿勢制約は使わない（動的に姿勢を計算してポーズに直接セットしている）
         req.goal_constraints.append(goal_constraints)
 
         goal_msg.request = req
