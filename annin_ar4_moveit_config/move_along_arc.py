@@ -25,7 +25,7 @@ class MoveAlongArc(Node):
     def generate_arc_points(self):
         points = []
         radius = 0.03  # 半径 5cm
-        center_y = 0.3
+        center_y = -0.3
         center_z = 0.3
         x = 0.0  # yz平面上で動くので x は固定
 
