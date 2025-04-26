@@ -8,7 +8,7 @@ import math
 import tf_transformations
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint
+from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
 from shape_msgs.msg import SolidPrimitive
 
 
@@ -25,8 +25,8 @@ class MoveAlongArc(Node):
 
     def generate_arc_points(self):
         points = []
-        radius = 0.05  # 半径
-        center = [0.0, -0.35, 0.35]  # 円弧の中心
+        radius = 0.05
+        center = [0.0, -0.35, 0.35]
         fixed_y = center[1]
 
         start_angle = math.radians(0)
@@ -39,7 +39,6 @@ class MoveAlongArc(Node):
             z = center[2] + radius * math.sin(theta)
             y = fixed_y
 
-            # 中心へのベクトル（z軸をこの方向に向けたい）
             dir_x = center[0] - x
             dir_y = center[1] - y
             dir_z = center[2] - z
@@ -48,26 +47,21 @@ class MoveAlongArc(Node):
             dir_y /= norm
             dir_z /= norm
 
-            # z軸を dir に向ける回転行列を作成
-            # x軸の候補（Y軸ベース）
             up = [0, 1, 0]
             x_axis = [
                 up[1]*dir_z - up[2]*dir_y,
                 up[2]*dir_x - up[0]*dir_z,
                 up[0]*dir_y - up[1]*dir_x,
             ]
-            # x軸を正規化
-            x_norm = math.sqrt(x_axis[0]**2 + x_axis[1]**2 + x_axis[2]**2)
+            x_norm = math.sqrt(sum(v**2 for v in x_axis))
             x_axis = [v / x_norm for v in x_axis]
 
-            # y軸を再定義（z × x）
             new_y = [
                 dir_y*x_axis[2] - dir_z*x_axis[1],
                 dir_z*x_axis[0] - dir_x*x_axis[2],
                 dir_x*x_axis[1] - dir_y*x_axis[0],
             ]
 
-            # 回転行列からクォータニオン生成
             rot_matrix = [
                 [x_axis[0], new_y[0], dir_x],
                 [x_axis[1], new_y[1], dir_y],
@@ -122,12 +116,23 @@ class MoveAlongArc(Node):
         position_constraint.constraint_region.primitives.append(box)
         position_constraint.constraint_region.primitive_poses.append(pose.pose)
 
+        # --- Orientation Constraint ---
+        orientation_constraint = OrientationConstraint()
+        orientation_constraint.header.frame_id = pose.header.frame_id
+        orientation_constraint.link_name = 'ee_link'
+        orientation_constraint.orientation = pose.pose.orientation
+        orientation_constraint.absolute_x_axis_tolerance = 0.1
+        orientation_constraint.absolute_y_axis_tolerance = 0.1
+        orientation_constraint.absolute_z_axis_tolerance = 0.1
+        orientation_constraint.weight = 1.0
+
         goal_constraints = Constraints()
         goal_constraints.position_constraints.append(position_constraint)
-        # 姿勢制約なし（姿勢はposeに反映済み）
-        req.goal_constraints.append(goal_constraints)
+        goal_constraints.orientation_constraints.append(orientation_constraint)
 
+        req.goal_constraints.append(goal_constraints)
         goal_msg.request = req
+
         self._send_goal_future = self._action_client.send_goal_async(goal_msg)
         self._send_goal_future.add_done_callback(self.goal_response_callback)
 
