@@ -8,7 +8,7 @@ import math
 import tf_transformations
 from geometry_msgs.msg import PoseStamped, Point
 from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint
+from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker
 
@@ -19,22 +19,18 @@ class MoveAlongArc(Node):
         self.arc_points = self.generate_arc_points()
         self.current_index = 0
 
-        # Marker Publisher
         self.marker_pub = self.create_publisher(Marker, 'visualization_marker', 10)
 
         self.get_logger().info('Waiting for MoveGroup action server...')
         self._action_client.wait_for_server()
 
-        # Publish markers
-        self.publish_arc_marker()
-        self.publish_center_marker()
-
+        self.publish_visualizations()
         self.send_next_goal()
 
     def generate_arc_points(self):
         points = []
-        radius = 0.05  # 半径
-        self.center = [0.0, -0.35, 0.35]  # 円弧の中心
+        radius = 0.05
+        self.center = [0.0, -0.35, 0.35]  # センター保存
         fixed_y = self.center[1]
 
         start_angle = math.radians(0)
@@ -47,7 +43,6 @@ class MoveAlongArc(Node):
             z = self.center[2] + radius * math.sin(theta)
             y = fixed_y
 
-            # 中心へのベクトル（z軸をこの方向に向けたい）
             dir_x = self.center[0] - x
             dir_y = self.center[1] - y
             dir_z = self.center[2] - z
@@ -56,24 +51,21 @@ class MoveAlongArc(Node):
             dir_y /= norm
             dir_z /= norm
 
-            # x軸の候補（Y軸ベース）
             up = [0, 1, 0]
             x_axis = [
                 up[1]*dir_z - up[2]*dir_y,
                 up[2]*dir_x - up[0]*dir_z,
                 up[0]*dir_y - up[1]*dir_x,
             ]
-            x_norm = math.sqrt(x_axis[0]**2 + x_axis[1]**2 + x_axis[2]**2)
+            x_norm = math.sqrt(sum(v**2 for v in x_axis))
             x_axis = [v / x_norm for v in x_axis]
 
-            # y軸を再定義（z × x）
             new_y = [
                 dir_y*x_axis[2] - dir_z*x_axis[1],
                 dir_z*x_axis[0] - dir_x*x_axis[2],
                 dir_x*x_axis[1] - dir_y*x_axis[0],
             ]
 
-            # 回転行列からクォータニオン生成
             rot_matrix = [
                 [x_axis[0], new_y[0], dir_x],
                 [x_axis[1], new_y[1], dir_y],
@@ -99,6 +91,87 @@ class MoveAlongArc(Node):
             points.append(pose)
         return points
 
+    def publish_visualizations(self):
+        # 中心点
+        center_marker = Marker()
+        center_marker.header.frame_id = 'base_link'
+        center_marker.header.stamp = self.get_clock().now().to_msg()
+        center_marker.ns = 'arc_center'
+        center_marker.id = 0
+        center_marker.type = Marker.SPHERE
+        center_marker.action = Marker.ADD
+        center_marker.pose.position.x = self.center[0]
+        center_marker.pose.position.y = self.center[1]
+        center_marker.pose.position.z = self.center[2]
+        center_marker.scale.x = 0.02
+        center_marker.scale.y = 0.02
+        center_marker.scale.z = 0.02
+        center_marker.color.r = 1.0
+        center_marker.color.g = 0.0
+        center_marker.color.b = 0.0
+        center_marker.color.a = 1.0
+        self.marker_pub.publish(center_marker)
+
+        # 軌道（ライン）
+        line_marker = Marker()
+        line_marker.header.frame_id = 'base_link'
+        line_marker.header.stamp = self.get_clock().now().to_msg()
+        line_marker.ns = 'arc_path'
+        line_marker.id = 1
+        line_marker.type = Marker.LINE_STRIP
+        line_marker.action = Marker.ADD
+        line_marker.scale.x = 0.005
+        line_marker.color.b = 1.0
+        line_marker.color.a = 1.0
+
+        for pose in self.arc_points:
+            p = Point()
+            p.x = pose.pose.position.x
+            p.y = pose.pose.position.y
+            p.z = pose.pose.position.z
+            line_marker.points.append(p)
+        self.marker_pub.publish(line_marker)
+
+        # 各エンドエフェクタZ軸
+        for idx, pose in enumerate(self.arc_points):
+            arrow = Marker()
+            arrow.header.frame_id = 'base_link'
+            arrow.header.stamp = self.get_clock().now().to_msg()
+            arrow.ns = 'ee_z_axis'
+            arrow.id = 100 + idx
+            arrow.type = Marker.ARROW
+            arrow.action = Marker.ADD
+
+            start = Point()
+            start.x = pose.pose.position.x
+            start.y = pose.pose.position.y
+            start.z = pose.pose.position.z
+
+            # Z軸方向をクォータニオンから取り出し
+            quat = [
+                pose.pose.orientation.x,
+                pose.pose.orientation.y,
+                pose.pose.orientation.z,
+                pose.pose.orientation.w
+            ]
+            rot = tf_transformations.quaternion_matrix(quat)
+            z_dir = [rot[0][2], rot[1][2], rot[2][2]]
+
+            end = Point()
+            end.x = start.x + 0.03 * z_dir[0]
+            end.y = start.y + 0.03 * z_dir[1]
+            end.z = start.z + 0.03 * z_dir[2]
+
+            arrow.points.append(start)
+            arrow.points.append(end)
+
+            arrow.scale.x = 0.002
+            arrow.scale.y = 0.004
+            arrow.scale.z = 0.004
+            arrow.color.g = 1.0
+            arrow.color.a = 1.0
+            self.marker_pub.publish(arrow)
+
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points):
             self.get_logger().info('✅ All arc points executed!')
@@ -114,7 +187,6 @@ class MoveAlongArc(Node):
         req.max_velocity_scaling_factor = 0.3
         req.max_acceleration_scaling_factor = 0.3
 
-        # --- Position Constraint ---
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = pose.header.frame_id
         position_constraint.link_name = 'ee_link'
@@ -128,16 +200,24 @@ class MoveAlongArc(Node):
         position_constraint.constraint_region.primitives.append(box)
         position_constraint.constraint_region.primitive_poses.append(pose.pose)
 
+        orientation_constraint = OrientationConstraint()
+        orientation_constraint.header.frame_id = pose.header.frame_id
+        orientation_constraint.link_name = 'ee_link'
+        orientation_constraint.orientation = pose.pose.orientation
+        orientation_constraint.absolute_x_axis_tolerance = 0.1
+        orientation_constraint.absolute_y_axis_tolerance = 0.1
+        orientation_constraint.absolute_z_axis_tolerance = 0.1
+        orientation_constraint.weight = 1.0
+
         goal_constraints = Constraints()
         goal_constraints.position_constraints.append(position_constraint)
-        req.goal_constraints.append(goal_constraints)
+        goal_constraints.orientation_constraints.append(orientation_constraint)
 
+        req.goal_constraints.append(goal_constraints)
         goal_msg.request = req
+
         self._send_goal_future = self._action_client.send_goal_async(goal_msg)
         self._send_goal_future.add_done_callback(self.goal_response_callback)
-
-        # エンドエフェクタのz軸矢印を表示
-        self.publish_ee_z_axis(pose)
 
     def goal_response_callback(self, future):
         goal_handle = future.result()
@@ -155,88 +235,6 @@ class MoveAlongArc(Node):
         self.current_index += 1
         self.send_next_goal()
 
-    def publish_arc_marker(self):
-        marker = Marker()
-        marker.header.frame_id = "base_link"
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = "arc_path"
-        marker.id = 0
-        marker.type = Marker.LINE_STRIP
-        marker.action = Marker.ADD
-        marker.scale.x = 0.005  # 線の太さ
-        marker.color.r = 0.0
-        marker.color.g = 1.0
-        marker.color.b = 0.0
-        marker.color.a = 1.0
-
-        for pose in self.arc_points:
-            marker.points.append(pose.pose.position)
-
-        self.marker_pub.publish(marker)
-
-    def publish_center_marker(self):
-        marker = Marker()
-        marker.header.frame_id = "base_link"
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = "arc_center"
-        marker.id = 1
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.scale.x = 0.02
-        marker.scale.y = 0.02
-        marker.scale.z = 0.02
-        marker.color.r = 1.0
-        marker.color.g = 0.0
-        marker.color.b = 0.0
-        marker.color.a = 1.0
-        marker.pose.position.x = self.center[0]
-        marker.pose.position.y = self.center[1]
-        marker.pose.position.z = self.center[2]
-        marker.pose.orientation.w = 1.0
-
-        self.marker_pub.publish(marker)
-
-    def publish_ee_z_axis(self, pose_stamped):
-        marker = Marker()
-        marker.header.frame_id = "base_link"
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = "ee_z_axis"
-        marker.id = 2
-        marker.type = Marker.ARROW
-        marker.action = Marker.ADD
-        marker.scale.x = 0.02  # 矢印の長さ
-        marker.scale.y = 0.005  # 矢の太さ
-        marker.scale.z = 0.005
-        marker.color.r = 0.0
-        marker.color.g = 0.0
-        marker.color.b = 1.0
-        marker.color.a = 1.0
-
-        # エンドエフェクタ位置
-        start = Point()
-        start.x = pose_stamped.pose.position.x
-        start.y = pose_stamped.pose.position.y
-        start.z = pose_stamped.pose.position.z
-
-        # エンドエフェクタz軸方向（ローカル座標系のz軸）
-        quat = [
-            pose_stamped.pose.orientation.x,
-            pose_stamped.pose.orientation.y,
-            pose_stamped.pose.orientation.z,
-            pose_stamped.pose.orientation.w,
-        ]
-        rot = tf_transformations.quaternion_matrix(quat)
-        z_dir = rot[0:3, 2]  # z軸ベクトル
-
-        end = Point()
-        end.x = start.x + 0.05 * z_dir[0]
-        end.y = start.y + 0.05 * z_dir[1]
-        end.z = start.z + 0.05 * z_dir[2]
-
-        marker.points.append(start)
-        marker.points.append(end)
-
-        self.marker_pub.publish(marker)
 
 def main(args=None):
     rclpy.init(args=args)
