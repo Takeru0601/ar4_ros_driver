@@ -8,10 +8,9 @@ class SimpleMarkerPublisher(Node):
     def __init__(self):
         super().__init__('simple_marker_publisher')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
-        self.timer = self.create_timer(1.0, self.timer_callback)
-        self.get_logger().info('✅ Marker publisher initialized')
+        self.timer = self.create_timer(1.0, self.publish_marker)  # 毎秒送る
 
-    def timer_callback(self):
+    def publish_marker(self):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
