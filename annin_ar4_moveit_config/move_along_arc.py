@@ -12,7 +12,6 @@ from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, 
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker
 
-
 class MoveAlongArc(Node):
     def __init__(self):
         super().__init__('move_along_arc_client')
@@ -33,13 +32,13 @@ class MoveAlongArc(Node):
 
     def generate_arc_points(self):
         points = []
-        self.radius = 0.1
+        self.radius = 0.05
         self.center = [0.0, -0.35, 0.35]
         fixed_y = self.center[1]
 
         start_angle = math.radians(0)
-        end_angle = math.radians(180)
-        steps = 10
+        end_angle = math.radians(90)
+        steps = 5
 
         for i in range(steps + 1):
             theta = start_angle + (end_angle - start_angle) * i / steps
@@ -47,44 +46,40 @@ class MoveAlongArc(Node):
             z = self.center[2] + self.radius * math.sin(theta)
             y = fixed_y
 
-            # -------- 姿勢計算（Z軸を中心向きに合わせる） --------
-            z_axis = [
-                self.center[0] - x,
-                self.center[1] - y,
-                self.center[2] - z
-            ]
-            z_norm = math.sqrt(sum(c**2 for c in z_axis))
-            z_axis = [c / z_norm for c in z_axis]
+            dir_x = self.center[0] - x
+            dir_y = self.center[1] - y
+            dir_z = self.center[2] - z
+            norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
+            dir_x /= norm
+            dir_y /= norm
+            dir_z /= norm
 
-            # X軸はできるだけ水平にとる（ここでは世界Y軸との外積）
-            world_up = [0.0, 1.0, 0.0]
+            up = [0, 1, 0]
             x_axis = [
-                world_up[1]*z_axis[2] - world_up[2]*z_axis[1],
-                world_up[2]*z_axis[0] - world_up[0]*z_axis[2],
-                world_up[0]*z_axis[1] - world_up[1]*z_axis[0]
+                up[1]*dir_z - up[2]*dir_y,
+                up[2]*dir_x - up[0]*dir_z,
+                up[0]*dir_y - up[1]*dir_x,
             ]
-            x_norm = math.sqrt(sum(c**2 for c in x_axis))
-            if x_norm < 1e-6:
-                x_axis = [1.0, 0.0, 0.0]  # 特殊ケース
-            else:
-                x_axis = [c / x_norm for c in x_axis]
+            x_norm = math.sqrt(sum(v**2 for v in x_axis))
+            x_axis = [v / x_norm for v in x_axis]
 
-            # Y軸は直交させる
-            y_axis = [
-                z_axis[1]*x_axis[2] - z_axis[2]*x_axis[1],
-                z_axis[2]*x_axis[0] - z_axis[0]*x_axis[2],
-                z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0]
+            new_y = [
+                dir_y*x_axis[2] - dir_z*x_axis[1],
+                dir_z*x_axis[0] - dir_x*x_axis[2],
+                dir_x*x_axis[1] - dir_y*x_axis[0],
             ]
 
             rot_matrix = [
-                [x_axis[0], y_axis[0], z_axis[0], 0],
-                [x_axis[1], y_axis[1], z_axis[1], 0],
-                [x_axis[2], y_axis[2], z_axis[2], 0],
-                [0, 0, 0, 1]
+                [x_axis[0], new_y[0], dir_x],
+                [x_axis[1], new_y[1], dir_y],
+                [x_axis[2], new_y[2], dir_z],
             ]
-
-            quat = tf_transformations.quaternion_from_matrix(rot_matrix)
-            # ---------------------------------------------
+            quat = tf_transformations.quaternion_from_matrix([
+                [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
+                [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
+                [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
+                [0, 0, 0, 1]
+            ])
 
             pose = PoseStamped()
             pose.header.frame_id = 'base_link'
@@ -172,7 +167,50 @@ class MoveAlongArc(Node):
         marker.id = id_num
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
-        marker.pose = pose.pose
+
+        marker.pose.position = pose.pose.position
+
+        dir_x = self.center[0] - pose.pose.position.x
+        dir_y = self.center[1] - pose.pose.position.y
+        dir_z = self.center[2] - pose.pose.position.z
+        norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
+        dir_x /= norm
+        dir_y /= norm
+        dir_z /= norm
+
+        arbitrary = [1, 0, 0] if abs(dir_x) < 0.9 else [0, 1, 0]
+
+        x_axis = [
+            arbitrary[1]*dir_z - arbitrary[2]*dir_y,
+            arbitrary[2]*dir_x - arbitrary[0]*dir_z,
+            arbitrary[0]*dir_y - arbitrary[1]*dir_x,
+        ]
+        x_norm = math.sqrt(sum(v**2 for v in x_axis))
+        x_axis = [v / x_norm for v in x_axis]
+
+        y_axis = [
+            dir_y*x_axis[2] - dir_z*x_axis[1],
+            dir_z*x_axis[0] - dir_x*x_axis[2],
+            dir_x*x_axis[1] - dir_y*x_axis[0],
+        ]
+
+        rot_matrix = [
+            [x_axis[0], y_axis[0], dir_x],
+            [x_axis[1], y_axis[1], dir_y],
+            [x_axis[2], y_axis[2], dir_z],
+        ]
+        quat = tf_transformations.quaternion_from_matrix([
+            [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
+            [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
+            [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
+            [0, 0, 0, 1]
+        ])
+
+        marker.pose.orientation.x = quat[0]
+        marker.pose.orientation.y = quat[1]
+        marker.pose.orientation.z = quat[2]
+        marker.pose.orientation.w = quat[3]
+
         marker.scale.x = 0.05
         marker.scale.y = 0.01
         marker.scale.z = 0.01
@@ -180,6 +218,7 @@ class MoveAlongArc(Node):
         marker.color.g = 0.0
         marker.color.b = 1.0
         marker.color.a = 1.0
+
         self.marker_pub.publish(marker)
 
     def publish_center_marker(self):
@@ -222,7 +261,6 @@ class MoveAlongArc(Node):
             point.z = pose.pose.position.z
             marker.points.append(point)
         self.marker_pub.publish(marker)
-
 
 def main(args=None):
     rclpy.init(args=args)
