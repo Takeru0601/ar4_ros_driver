@@ -33,7 +33,7 @@ class MoveAlongArc(Node):
 
     def generate_arc_points(self):
         points = []
-        self.radius = 0.8
+        self.radius = 0.1
         self.center = np.array([0.0, -0.35, 0.35])
 
         start_angle = math.radians(0)
