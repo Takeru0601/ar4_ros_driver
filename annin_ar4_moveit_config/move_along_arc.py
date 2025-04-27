@@ -5,6 +5,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 
 import math
+import numpy as np
 import tf_transformations
 from geometry_msgs.msg import PoseStamped, Point
 from moveit_msgs.action import MoveGroup
@@ -17,7 +18,6 @@ class MoveAlongArc(Node):
         super().__init__('move_along_arc_client')
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
 
-        # ★ Marker Publisher
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
         self.arc_points = self.generate_arc_points()
@@ -26,7 +26,6 @@ class MoveAlongArc(Node):
         self.get_logger().info('Waiting for MoveGroup action server...')
         self._action_client.wait_for_server()
 
-        # ★ 最初に中心点と軌道を表示
         self.publish_center_marker()
         self.publish_arc_line_marker()
 
@@ -35,53 +34,47 @@ class MoveAlongArc(Node):
     def generate_arc_points(self):
         points = []
         self.radius = 0.05
-        self.center = [0.0, -0.35, 0.35]
-        fixed_y = self.center[1]
+        self.center = np.array([0.0, -0.35, 0.35])
 
         start_angle = math.radians(0)
-        end_angle = math.radians(90)
-        steps = 5
+        end_angle = math.radians(180)
+        steps = 10
 
         for i in range(steps + 1):
             theta = start_angle + (end_angle - start_angle) * i / steps
             x = self.center[0] + self.radius * math.cos(theta)
+            y = self.center[1]
             z = self.center[2] + self.radius * math.sin(theta)
-            y = fixed_y
 
-            dir_x = self.center[0] - x
-            dir_y = self.center[1] - y
-            dir_z = self.center[2] - z
-            norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
-            dir_x /= norm
-            dir_y /= norm
-            dir_z /= norm
+            position = np.array([x, y, z])
 
-            up = [0, 1, 0]
-            x_axis = [
-                up[1]*dir_z - up[2]*dir_y,
-                up[2]*dir_x - up[0]*dir_z,
-                up[0]*dir_y - up[1]*dir_x,
-            ]
-            x_norm = math.sqrt(sum(v**2 for v in x_axis))
-            x_axis = [v / x_norm for v in x_axis]
+            # --- 姿勢計算 ---
+            z_axis = (self.center - position)
+            z_axis /= np.linalg.norm(z_axis)
 
-            new_y = [
-                dir_y*x_axis[2] - dir_z*x_axis[1],
-                dir_z*x_axis[0] - dir_x*x_axis[2],
-                dir_x*x_axis[1] - dir_y*x_axis[0],
-            ]
-
-            rot_matrix = [
-                [x_axis[0], new_y[0], dir_x],
-                [x_axis[1], new_y[1], dir_y],
-                [x_axis[2], new_y[2], dir_z],
-            ]
-            quat = tf_transformations.quaternion_from_matrix([
-                [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
-                [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
-                [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
-                [0, 0, 0, 1]
+            # 円周上の接線方向
+            tangent = np.array([
+                -math.sin(theta),  # θに対して接線ベクトル
+                0.0,
+                math.cos(theta)
             ])
+            tangent /= np.linalg.norm(tangent)
+
+            x_axis = tangent
+
+            y_axis = np.cross(z_axis, x_axis)
+            y_axis /= np.linalg.norm(y_axis)
+
+            # 再度直交化（念のため）
+            x_axis = np.cross(y_axis, z_axis)
+            x_axis /= np.linalg.norm(x_axis)
+
+            rot_matrix = np.eye(4)
+            rot_matrix[0, :3] = x_axis
+            rot_matrix[1, :3] = y_axis
+            rot_matrix[2, :3] = z_axis
+
+            quat = tf_transformations.quaternion_from_matrix(rot_matrix)
 
             pose = PoseStamped()
             pose.header.frame_id = 'base_link'
@@ -105,7 +98,6 @@ class MoveAlongArc(Node):
         pose = self.arc_points[self.current_index]
         self.get_logger().info(f'▶️ Sending point {self.current_index + 1}/{len(self.arc_points)}')
 
-        # ★ 毎回エンドエフェクタのz軸を矢印で表示
         self.publish_ee_z_axis(pose, self.current_index)
 
         goal_msg = MoveGroup.Goal()
@@ -118,9 +110,6 @@ class MoveAlongArc(Node):
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = pose.header.frame_id
         position_constraint.link_name = 'ee_link'
-        position_constraint.target_point_offset.x = 0.0
-        position_constraint.target_point_offset.y = 0.0
-        position_constraint.target_point_offset.z = 0.0
 
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
@@ -164,7 +153,6 @@ class MoveAlongArc(Node):
         self.current_index += 1
         self.send_next_goal()
 
-    # ★ エンドエフェクタz軸を矢印で表示
     def publish_ee_z_axis(self, pose, id_num):
         marker = Marker()
         marker.header.frame_id = 'base_link'
@@ -183,7 +171,6 @@ class MoveAlongArc(Node):
         marker.color.a = 1.0
         self.marker_pub.publish(marker)
 
-    # ★ 円弧の中心点を表示
     def publish_center_marker(self):
         marker = Marker()
         marker.header.frame_id = 'base_link'
@@ -204,7 +191,6 @@ class MoveAlongArc(Node):
         marker.color.a = 1.0
         self.marker_pub.publish(marker)
 
-    # ★ 軌道をラインで表示
     def publish_arc_line_marker(self):
         marker = Marker()
         marker.header.frame_id = 'base_link'
@@ -225,7 +211,6 @@ class MoveAlongArc(Node):
             point.z = pose.pose.position.z
             marker.points.append(point)
         self.marker_pub.publish(marker)
-
 
 def main(args=None):
     rclpy.init(args=args)
