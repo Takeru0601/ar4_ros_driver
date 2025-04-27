@@ -168,7 +168,7 @@ class MoveAlongArc(Node):
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
         marker.scale.x = 0.05
-        marker.scale.y = 0.004
+        marker.scale.y = 0.1
         marker.scale.z = 0.1
         marker.color.r = 0.0
         marker.color.g = 0.0
