@@ -49,23 +49,19 @@ class MoveAlongArc(Node):
             position = np.array([x, y, z])
 
             # --- 姿勢計算 ---
-            z_axis = (self.center - position)
+            z_axis = self.center - position
             z_axis /= np.linalg.norm(z_axis)
 
-            # 円周上の接線方向
             tangent = np.array([
-                -math.sin(theta),  # θに対して接線ベクトル
+                -math.sin(theta),
                 0.0,
                 math.cos(theta)
             ])
             tangent /= np.linalg.norm(tangent)
 
-            x_axis = tangent
-
-            y_axis = np.cross(z_axis, x_axis)
+            y_axis = np.cross(z_axis, tangent)
             y_axis /= np.linalg.norm(y_axis)
 
-            # 再度直交化（念のため）
             x_axis = np.cross(y_axis, z_axis)
             x_axis /= np.linalg.norm(x_axis)
 
@@ -106,10 +102,12 @@ class MoveAlongArc(Node):
         req.max_velocity_scaling_factor = 0.3
         req.max_acceleration_scaling_factor = 0.3
 
-        # --- Position Constraint ---
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = pose.header.frame_id
         position_constraint.link_name = 'ee_link'
+        position_constraint.target_point_offset.x = 0.0
+        position_constraint.target_point_offset.y = 0.0
+        position_constraint.target_point_offset.z = 0.0
 
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
@@ -117,7 +115,6 @@ class MoveAlongArc(Node):
         position_constraint.constraint_region.primitives.append(box)
         position_constraint.constraint_region.primitive_poses.append(pose.pose)
 
-        # --- Orientation Constraint ---
         orientation_constraint = OrientationConstraint()
         orientation_constraint.header.frame_id = pose.header.frame_id
         orientation_constraint.link_name = 'ee_link'
