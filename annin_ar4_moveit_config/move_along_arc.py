@@ -5,13 +5,13 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 
 import math
-import numpy as np
 import tf_transformations
 from geometry_msgs.msg import PoseStamped, Point
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker
+
 
 class MoveAlongArc(Node):
     def __init__(self):
@@ -34,7 +34,8 @@ class MoveAlongArc(Node):
     def generate_arc_points(self):
         points = []
         self.radius = 0.1
-        self.center = np.array([0.0, -0.35, 0.35])
+        self.center = [0.0, -0.35, 0.35]
+        fixed_y = self.center[1]
 
         start_angle = math.radians(0)
         end_angle = math.radians(180)
@@ -43,34 +44,47 @@ class MoveAlongArc(Node):
         for i in range(steps + 1):
             theta = start_angle + (end_angle - start_angle) * i / steps
             x = self.center[0] + self.radius * math.cos(theta)
-            y = self.center[1]
             z = self.center[2] + self.radius * math.sin(theta)
+            y = fixed_y
 
-            position = np.array([x, y, z])
+            # -------- 姿勢計算（Z軸を中心向きに合わせる） --------
+            z_axis = [
+                self.center[0] - x,
+                self.center[1] - y,
+                self.center[2] - z
+            ]
+            z_norm = math.sqrt(sum(c**2 for c in z_axis))
+            z_axis = [c / z_norm for c in z_axis]
 
-            # --- 姿勢計算 ---
-            z_axis = self.center - position
-            z_axis /= np.linalg.norm(z_axis)
+            # X軸はできるだけ水平にとる（ここでは世界Y軸との外積）
+            world_up = [0.0, 1.0, 0.0]
+            x_axis = [
+                world_up[1]*z_axis[2] - world_up[2]*z_axis[1],
+                world_up[2]*z_axis[0] - world_up[0]*z_axis[2],
+                world_up[0]*z_axis[1] - world_up[1]*z_axis[0]
+            ]
+            x_norm = math.sqrt(sum(c**2 for c in x_axis))
+            if x_norm < 1e-6:
+                x_axis = [1.0, 0.0, 0.0]  # 特殊ケース
+            else:
+                x_axis = [c / x_norm for c in x_axis]
 
-            tangent = np.array([
-                -math.sin(theta),
-                0.0,
-                math.cos(theta)
-            ])
-            tangent /= np.linalg.norm(tangent)
+            # Y軸は直交させる
+            y_axis = [
+                z_axis[1]*x_axis[2] - z_axis[2]*x_axis[1],
+                z_axis[2]*x_axis[0] - z_axis[0]*x_axis[2],
+                z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0]
+            ]
 
-            y_axis = np.cross(z_axis, tangent)
-            y_axis /= np.linalg.norm(y_axis)
-
-            x_axis = np.cross(y_axis, z_axis)
-            x_axis /= np.linalg.norm(x_axis)
-
-            rot_matrix = np.eye(4)
-            rot_matrix[0, :3] = x_axis
-            rot_matrix[1, :3] = y_axis
-            rot_matrix[2, :3] = z_axis
+            rot_matrix = [
+                [x_axis[0], y_axis[0], z_axis[0], 0],
+                [x_axis[1], y_axis[1], z_axis[1], 0],
+                [x_axis[2], y_axis[2], z_axis[2], 0],
+                [0, 0, 0, 1]
+            ]
 
             quat = tf_transformations.quaternion_from_matrix(rot_matrix)
+            # ---------------------------------------------
 
             pose = PoseStamped()
             pose.header.frame_id = 'base_link'
@@ -208,6 +222,7 @@ class MoveAlongArc(Node):
             point.z = pose.pose.position.z
             marker.points.append(point)
         self.marker_pub.publish(marker)
+
 
 def main(args=None):
     rclpy.init(args=args)
