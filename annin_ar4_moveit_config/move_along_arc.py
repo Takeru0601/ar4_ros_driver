@@ -32,13 +32,13 @@ class MoveAlongArc(Node):
 
     def generate_arc_points(self):
         points = []
-        self.radius = 0.05
+        self.radius = 0.1
         self.center = [0.0, -0.35, 0.35]
         fixed_y = self.center[1]
 
         start_angle = math.radians(0)
-        end_angle = math.radians(90)
-        steps = 5
+        end_angle = math.radians(180)
+        steps = 10
 
         for i in range(steps + 1):
             theta = start_angle + (end_angle - start_angle) * i / steps
@@ -155,7 +155,7 @@ class MoveAlongArc(Node):
 
     def get_result_callback(self, future):
         result = future.result().result
-        self.get_logger().info(f'🎯 Result received: {result.error_code}')
+        self.get_logger().info(f'🎯 Result received: {result.error_code}')</code>
         self.current_index += 1
         self.send_next_goal()
 
@@ -167,57 +167,42 @@ class MoveAlongArc(Node):
         marker.id = id_num
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
-
-        marker.pose.position = pose.pose.position
-
-        dir_x = self.center[0] - pose.pose.position.x
-        dir_y = self.center[1] - pose.pose.position.y
-        dir_z = self.center[2] - pose.pose.position.z
-        norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
-        dir_x /= norm
-        dir_y /= norm
-        dir_z /= norm
-
-        arbitrary = [1, 0, 0] if abs(dir_x) < 0.9 else [0, 1, 0]
-
-        x_axis = [
-            arbitrary[1]*dir_z - arbitrary[2]*dir_y,
-            arbitrary[2]*dir_x - arbitrary[0]*dir_z,
-            arbitrary[0]*dir_y - arbitrary[1]*dir_x,
-        ]
-        x_norm = math.sqrt(sum(v**2 for v in x_axis))
-        x_axis = [v / x_norm for v in x_axis]
-
-        y_axis = [
-            dir_y*x_axis[2] - dir_z*x_axis[1],
-            dir_z*x_axis[0] - dir_x*x_axis[2],
-            dir_x*x_axis[1] - dir_y*x_axis[0],
-        ]
-
-        rot_matrix = [
-            [x_axis[0], y_axis[0], dir_x],
-            [x_axis[1], y_axis[1], dir_y],
-            [x_axis[2], y_axis[2], dir_z],
-        ]
-        quat = tf_transformations.quaternion_from_matrix([
-            [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
-            [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
-            [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
-            [0, 0, 0, 1]
-        ])
-
-        marker.pose.orientation.x = quat[0]
-        marker.pose.orientation.y = quat[1]
-        marker.pose.orientation.z = quat[2]
-        marker.pose.orientation.w = quat[3]
-
-        marker.scale.x = 0.05
-        marker.scale.y = 0.01
-        marker.scale.z = 0.01
+        marker.scale.x = 0.02
+        marker.scale.y = 0.004
+        marker.scale.z = 0.004
         marker.color.r = 0.0
         marker.color.g = 0.0
         marker.color.b = 1.0
         marker.color.a = 1.0
+
+        start = Point()
+        start.x = pose.pose.position.x
+        start.y = pose.pose.position.y
+        start.z = pose.pose.position.z
+
+        quat = (
+            pose.pose.orientation.x,
+            pose.pose.orientation.y,
+            pose.pose.orientation.z,
+            pose.pose.orientation.w,
+        )
+        rot_matrix = tf_transformations.quaternion_matrix(quat)
+
+        z_axis = [
+            rot_matrix[0][2],
+            rot_matrix[1][2],
+            rot_matrix[2][2],
+        ]
+
+        arrow_length = 0.05
+
+        end = Point()
+        end.x = start.x + arrow_length * z_axis[0]
+        end.y = start.y + arrow_length * z_axis[1]
+        end.z = start.z + arrow_length * z_axis[2]
+
+        marker.points.append(start)
+        marker.points.append(end)
 
         self.marker_pub.publish(marker)
 
