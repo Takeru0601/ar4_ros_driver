@@ -33,12 +33,12 @@ class MoveAlongArc(Node):
 
     def generate_arc_points(self):
         points = []
-        self.radius = 0.05
+        self.radius = 0.1
         self.center = np.array([0.0, -0.35, 0.35])
 
         start_angle = math.radians(0)
         end_angle = math.radians(90)
-        steps = 5
+        steps = 10
 
         for i in range(steps + 1):
             theta = start_angle + (end_angle - start_angle) * i / steps
