@@ -155,7 +155,7 @@ class MoveAlongArc(Node):
 
     def get_result_callback(self, future):
         result = future.result().result
-        self.get_logger().info(f'🎯 Result received: {result.error_code}')</code>
+        self.get_logger().info(f'🎯 Result received: {result.error_code}')
         self.current_index += 1
         self.send_next_goal()
 
