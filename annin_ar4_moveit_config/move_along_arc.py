@@ -1,236 +1,113 @@
-#!/usr/bin/env python3
-
 import rclpy
 from rclpy.node import Node
-from rclpy.action import ActionClient
-
-import math
-import tf_transformations
-from geometry_msgs.msg import PoseStamped, Point
+import numpy as np
+from geometry_msgs.msg import PoseStamped
 from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
-from shape_msgs.msg import SolidPrimitive
-from visualization_msgs.msg import Marker
+from moveit_msgs.msg import Constraints, OrientationConstraint
+from trajectory_msgs.msg import JointTrajectory
+import tf_transformations
+from rclpy.action import ActionClient
+from builtin_interfaces.msg import Duration
 
 class MoveAlongArc(Node):
     def __init__(self):
-        super().__init__('move_along_arc_client')
-        self._action_client = ActionClient(self, MoveGroup, 'move_action')
+        super().__init__('move_along_arc')
+        self.client = ActionClient(self, MoveGroup, '/move_action')
 
-        # ★ Marker Publisher
-        self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
+        self.center = np.array([0.0, -0.35, 0.35])  # 中心点
+        self.radius = 0.30                          # 半径
+        self.height = 0.4                           # 円弧の高さ（Z座標）
+        self.start_angle = np.radians(0)             # 開始角度
+        self.end_angle = np.radians(90)              # 終了角度
+        self.steps = 10                              # 何分割するか（ステップ数）
 
-        self.arc_points = self.generate_arc_points()
-        self.current_index = 0
+        self.group_name = 'ar_manipulator'
 
-        self.get_logger().info('Waiting for MoveGroup action server...')
-        self._action_client.wait_for_server()
+    def compute_orientation_towards_center(self, position, center):
+        dir_vec = np.array(center) - np.array(position)
+        dir_vec /= np.linalg.norm(dir_vec)
 
-        # ★ 最初に中心点と軌道を表示
-        self.publish_center_marker()
-        self.publish_arc_line_marker()
+        up_vec = np.array([0.0, 1.0, 0.0])
 
-        self.send_next_goal()
+        x_axis = np.cross(up_vec, dir_vec)
+        if np.linalg.norm(x_axis) < 1e-6:
+            up_vec = np.array([1.0, 0.0, 0.0])
+            x_axis = np.cross(up_vec, dir_vec)
+        x_axis /= np.linalg.norm(x_axis)
 
-    def generate_arc_points(self):
-        points = []
-        self.radius = 0.05
-        self.center = [0.0, -0.35, 0.35]
-        fixed_y = self.center[1]
+        y_axis = np.cross(dir_vec, x_axis)
+        y_axis /= np.linalg.norm(y_axis)
 
-        start_angle = math.radians(0)
-        end_angle = math.radians(90)
-        steps = 5
+        rot_matrix = np.eye(4)
+        rot_matrix[0, :3] = x_axis
+        rot_matrix[1, :3] = y_axis
+        rot_matrix[2, :3] = dir_vec
 
-        for i in range(steps + 1):
-            theta = start_angle + (end_angle - start_angle) * i / steps
-            x = self.center[0] + self.radius * math.cos(theta)
-            z = self.center[2] + self.radius * math.sin(theta)
-            y = fixed_y
+        quat = tf_transformations.quaternion_from_matrix(rot_matrix)
+        return quat
 
-            dir_x = self.center[0] - x
-            dir_y = self.center[1] - y
-            dir_z = self.center[2] - z
-            norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
-            dir_x /= norm
-            dir_y /= norm
-            dir_z /= norm
+    def create_pose(self, x, y, z, quat):
+        pose = PoseStamped()
+        pose.header.frame_id = 'base_link'
+        pose.pose.position.x = x
+        pose.pose.position.y = y
+        pose.pose.position.z = z
+        pose.pose.orientation.x = quat[0]
+        pose.pose.orientation.y = quat[1]
+        pose.pose.orientation.z = quat[2]
+        pose.pose.orientation.w = quat[3]
+        return pose
 
-            up = [0, 1, 0]
-            x_axis = [
-                up[1]*dir_z - up[2]*dir_y,
-                up[2]*dir_x - up[0]*dir_z,
-                up[0]*dir_y - up[1]*dir_x,
-            ]
-            x_norm = math.sqrt(sum(v**2 for v in x_axis))
-            x_axis = [v / x_norm for v in x_axis]
-
-            new_y = [
-                dir_y*x_axis[2] - dir_z*x_axis[1],
-                dir_z*x_axis[0] - dir_x*x_axis[2],
-                dir_x*x_axis[1] - dir_y*x_axis[0],
-            ]
-
-            rot_matrix = [
-                [x_axis[0], new_y[0], dir_x],
-                [x_axis[1], new_y[1], dir_y],
-                [x_axis[2], new_y[2], dir_z],
-            ]
-            quat = tf_transformations.quaternion_from_matrix([
-                [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
-                [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
-                [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
-                [0, 0, 0, 1]
-            ])
-
-            pose = PoseStamped()
-            pose.header.frame_id = 'base_link'
-            pose.pose.position.x = x
-            pose.pose.position.y = y
-            pose.pose.position.z = z
-            pose.pose.orientation.x = quat[0]
-            pose.pose.orientation.y = quat[1]
-            pose.pose.orientation.z = quat[2]
-            pose.pose.orientation.w = quat[3]
-
-            points.append(pose)
-        return points
-
-    def send_next_goal(self):
-        if self.current_index >= len(self.arc_points):
-            self.get_logger().info('✅ All arc points executed!')
-            rclpy.shutdown()
-            return
-
-        pose = self.arc_points[self.current_index]
-        self.get_logger().info(f'▶️ Sending point {self.current_index + 1}/{len(self.arc_points)}')
-
-        # ★ 毎回エンドエフェクタのz軸を矢印で表示
-        self.publish_ee_z_axis(pose, self.current_index)
-
+    def send_goal(self, pose):
         goal_msg = MoveGroup.Goal()
-        req = MotionPlanRequest()
-        req.group_name = 'ar_manipulator'
-        req.max_velocity_scaling_factor = 0.3
-        req.max_acceleration_scaling_factor = 0.3
+        goal_msg.request.group_name = self.group_name
+        goal_msg.request.allowed_planning_time = 5.0
 
-        # --- Position Constraint ---
-        position_constraint = PositionConstraint()
-        position_constraint.header.frame_id = pose.header.frame_id
-        position_constraint.link_name = 'ee_link'
-        position_constraint.target_point_offset.x = 0.0
-        position_constraint.target_point_offset.y = 0.0
-        position_constraint.target_point_offset.z = 0.0
+        goal_msg.request.goal_constraints.append(Constraints())
+        goal_msg.request.goal_constraints[0].position_constraints = []
+        goal_msg.request.goal_constraints[0].orientation_constraints = []
 
-        box = SolidPrimitive()
-        box.type = SolidPrimitive.BOX
-        box.dimensions = [0.01, 0.01, 0.01]
-        position_constraint.constraint_region.primitives.append(box)
-        position_constraint.constraint_region.primitive_poses.append(pose.pose)
+        goal_msg.request.pose_goal = pose.pose
 
-        # --- Orientation Constraint ---
-        orientation_constraint = OrientationConstraint()
-        orientation_constraint.header.frame_id = pose.header.frame_id
-        orientation_constraint.link_name = 'ee_link'
-        orientation_constraint.orientation = pose.pose.orientation
-        orientation_constraint.absolute_x_axis_tolerance = 0.1
-        orientation_constraint.absolute_y_axis_tolerance = 0.1
-        orientation_constraint.absolute_z_axis_tolerance = 0.1
-        orientation_constraint.weight = 1.0
+        self.client.wait_for_server()
 
-        goal_constraints = Constraints()
-        goal_constraints.position_constraints.append(position_constraint)
-        goal_constraints.orientation_constraints.append(orientation_constraint)
-
-        req.goal_constraints.append(goal_constraints)
-        goal_msg.request = req
-
-        self._send_goal_future = self._action_client.send_goal_async(goal_msg)
-        self._send_goal_future.add_done_callback(self.goal_response_callback)
-
-    def goal_response_callback(self, future):
+        future = self.client.send_goal_async(goal_msg)
+        rclpy.spin_until_future_complete(self, future)
         goal_handle = future.result()
+
         if not goal_handle.accepted:
-            self.get_logger().error('❌ Goal rejected')
-            rclpy.shutdown()
+            self.get_logger().error('Goal rejected')
             return
-        self.get_logger().info('✅ Goal accepted')
-        self._get_result_future = goal_handle.get_result_async()
-        self._get_result_future.add_done_callback(self.get_result_callback)
 
-    def get_result_callback(self, future):
-        result = future.result().result
-        self.get_logger().info(f'🎯 Result received: {result.error_code}')
-        self.current_index += 1
-        self.send_next_goal()
+        result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(self, result_future)
+        result = result_future.result()
 
-    # ★ エンドエフェクタz軸を矢印で表示
-    def publish_ee_z_axis(self, pose, id_num):
-        marker = Marker()
-        marker.header.frame_id = 'base_link'
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'ee_z_axis'
-        marker.id = id_num
-        marker.type = Marker.ARROW
-        marker.action = Marker.ADD
-        marker.pose = pose.pose
-        marker.scale.x = 0.05
-        marker.scale.y = 0.01
-        marker.scale.z = 0.01
-        marker.color.r = 0.0
-        marker.color.g = 0.0
-        marker.color.b = 1.0
-        marker.color.a = 1.0
-        self.marker_pub.publish(marker)
+        if result.error_code.val == 1:
+            self.get_logger().info('✅ Move succeeded!')
+        else:
+            self.get_logger().error(f'❌ Move failed with code: {result.error_code.val}')
 
-    # ★ 円弧の中心点を表示
-    def publish_center_marker(self):
-        marker = Marker()
-        marker.header.frame_id = 'base_link'
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'arc_center'
-        marker.id = 1000
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.pose.position.x = self.center[0]
-        marker.pose.position.y = self.center[1]
-        marker.pose.position.z = self.center[2]
-        marker.scale.x = 0.02
-        marker.scale.y = 0.02
-        marker.scale.z = 0.02
-        marker.color.r = 1.0
-        marker.color.g = 0.0
-        marker.color.b = 0.0
-        marker.color.a = 1.0
-        self.marker_pub.publish(marker)
+    def move_along_arc(self):
+        angles = np.linspace(self.start_angle, self.end_angle, self.steps)
 
-    # ★ 軌道をラインで表示
-    def publish_arc_line_marker(self):
-        marker = Marker()
-        marker.header.frame_id = 'base_link'
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'arc_path'
-        marker.id = 2000
-        marker.type = Marker.LINE_STRIP
-        marker.action = Marker.ADD
-        marker.scale.x = 0.005
-        marker.color.r = 0.0
-        marker.color.g = 1.0
-        marker.color.b = 0.0
-        marker.color.a = 1.0
-        for pose in self.arc_points:
-            point = Point()
-            point.x = pose.pose.position.x
-            point.y = pose.pose.position.y
-            point.z = pose.pose.position.z
-            marker.points.append(point)
-        self.marker_pub.publish(marker)
+        for theta in angles:
+            x = self.center[0] + self.radius * np.cos(theta)
+            y = self.center[1] + self.radius * np.sin(theta)
+            z = self.height
 
+            position = [x, y, z]
+            quat = self.compute_orientation_towards_center(position, self.center)
+            pose = self.create_pose(x, y, z, quat)
+
+            self.send_goal(pose)
 
 def main(args=None):
     rclpy.init(args=args)
     node = MoveAlongArc()
-    rclpy.spin(node)
+    node.move_along_arc()
+    node.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
