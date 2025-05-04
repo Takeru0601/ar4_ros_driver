@@ -13,7 +13,7 @@ class ZAxisVisualizer(Node):
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
         self.center = [0.0, -0.35, 0.35]
-        self.radius = 0.03  # 30mm = 0.03m
+        self.radius = 0.05  # 30mm = 0.03m
 
         # 中心球を1秒ごとに再送信
         self.create_timer(1.0, self.publish_center_sphere)
@@ -38,7 +38,7 @@ class ZAxisVisualizer(Node):
         marker.color.r = 1.0
         marker.color.g = 0.0
         marker.color.b = 0.0
-        marker.color.a = 0.3  # 半透明
+        marker.color.a = 0.4  # 半透明
         marker.lifetime.sec = 2  # 少し長めに表示
         self.marker_pub.publish(marker)
 
