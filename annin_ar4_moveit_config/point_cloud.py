@@ -38,7 +38,7 @@ class ZAxisVisualizer(Node):
         self.marker_pub.publish(marker)
 
     def publish_point_cloud(self):
-        steps = 40
+        steps = 100
         for i in range(steps):
             theta = 2 * math.pi * i / steps
             phi = math.acos(2 * i / steps - 1)
