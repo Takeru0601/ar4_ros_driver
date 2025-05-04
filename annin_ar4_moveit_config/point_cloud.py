@@ -13,8 +13,12 @@ class ZAxisVisualizer(Node):
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
         self.center = [0.0, -0.35, 0.35]
-        self.radius = 0.03
-        self.publish_center_sphere()
+        self.radius = 0.03  # 30mm = 0.03m
+
+        # 中心球を1秒ごとに再送信
+        self.create_timer(1.0, self.publish_center_sphere)
+
+        # 一度だけ矢印を表示
         self.publish_point_cloud()
 
     def publish_center_sphere(self):
@@ -35,10 +39,11 @@ class ZAxisVisualizer(Node):
         marker.color.g = 0.0
         marker.color.b = 0.0
         marker.color.a = 0.3  # 半透明
+        marker.lifetime.sec = 2  # 少し長めに表示
         self.marker_pub.publish(marker)
 
     def publish_point_cloud(self):
-        steps = 100
+        steps = 40
         for i in range(steps):
             theta = 2 * math.pi * i / steps
             phi = math.acos(2 * i / steps - 1)
@@ -49,9 +54,8 @@ class ZAxisVisualizer(Node):
 
             dist = math.sqrt((x - self.center[0])**2 + (y - self.center[1])**2 + (z - self.center[2])**2)
             if dist < self.radius:
-                continue  # 中心からself.radius m以内はスキップ
+                continue
 
-            # Z軸方向（中心へ向ける）ベクトルを矢印で表示
             self.publish_arrow(x, y, z, self.center, i + 1)
 
     def publish_arrow(self, x, y, z, center, marker_id):
@@ -77,7 +81,7 @@ class ZAxisVisualizer(Node):
         marker.id = marker_id
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
-        marker.scale.x = 0.01  # 矢の長さ
+        marker.scale.x = 0.01
         marker.scale.y = 0.015
         marker.scale.z = 0.02
         marker.color.r = 0.0
