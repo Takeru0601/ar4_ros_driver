@@ -1,145 +1,143 @@
-#!/usr/bin/env python3
-
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Point
+from moveit_msgs.srv import GetPositionIK
+from geometry_msgs.msg import PoseStamped, Point
 from visualization_msgs.msg import Marker
 import tf_transformations
-import random
 import math
+import time
 
-class PointCloudVisualizer(Node):
+class ReachableArrowVisualizer(Node):
     def __init__(self):
-        super().__init__('point_cloud_visualizer')
+        super().__init__('reachable_arrow_visualizer')
 
-        # === パラメータ ===
-        self.center = [0.0, -0.35, 0.35]
-        self.radius_threshold = 0.05  # 中心からこの距離未満の点は削除
-        self.num_points = 2000         # 矢印の数
+        # Parameters
+        self.center = [0.0, -0.33, 0.35]
+        self.radius_threshold = 0.1
+        self.num_points = 100
 
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
+        self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
+        while not self.ik_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('Waiting for IK service...')
 
-        # 可視化マーカーを送信
-        self.publish_center_marker()
-        self.publish_inner_sphere_marker()
-        self.publish_point_arrows()
+        self.valid_marker_id = 0
+        self.generate_and_check_points()
+        self.publish_sphere_marker()
 
-    def generate_valid_random_points(self):
-        points = []
-        while len(points) < self.num_points:
-            x = random.uniform(-0.2, 0.2)
-            y = random.uniform(-0.6, -0.1)
-            z = random.uniform(0.1, 0.6)
+        self.get_logger().info('✅ Done')
+        rclpy.shutdown()
 
-            dx = x - self.center[0]
-            dy = y - self.center[1]
-            dz = z - self.center[2]
-            dist = math.sqrt(dx**2 + dy**2 + dz**2)
+    def generate_and_check_points(self):
+        phi_steps = int(math.sqrt(self.num_points))
+        theta_steps = self.num_points // phi_steps
 
-            if dist >= self.radius_threshold:
-                points.append((x, y, z))
-        return points
+        for i in range(phi_steps):
+            phi = math.pi * i / phi_steps
+            for j in range(theta_steps):
+                theta = 2 * math.pi * j / theta_steps
 
-    def compute_orientation_quat(self, from_point, to_point):
-        dir_x = to_point[0] - from_point[0]
-        dir_y = to_point[1] - from_point[1]
-        dir_z = to_point[2] - from_point[2]
-        norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
-        dir_x /= norm
-        dir_y /= norm
-        dir_z /= norm
+                x = self.center[0] + self.radius_threshold * math.sin(phi) * math.cos(theta)
+                y = self.center[1] + self.radius_threshold * math.sin(phi) * math.sin(theta)
+                z = self.center[2] + self.radius_threshold * math.cos(phi)
 
-        # Y軸を up ベクトルとして姿勢を定義（Z軸が中心を向く）
+                direction = [
+                    self.center[0] - x,
+                    self.center[1] - y,
+                    self.center[2] - z,
+                ]
+                norm = math.sqrt(sum(d**2 for d in direction))
+                z_axis = [d / norm for d in direction]
+
+                pose = PoseStamped()
+                pose.header.frame_id = 'base_link'
+                pose.pose.position.x = x
+                pose.pose.position.y = y
+                pose.pose.position.z = z
+
+                quat = self.get_quaternion_facing_z(z_axis)
+                pose.pose.orientation.x = quat[0]
+                pose.pose.orientation.y = quat[1]
+                pose.pose.orientation.z = quat[2]
+                pose.pose.orientation.w = quat[3]
+
+                if self.check_ik(pose):
+                    self.publish_arrow_marker(pose, z_axis)
+                time.sleep(0.01)
+
+    def check_ik(self, pose):
+        request = GetPositionIK.Request()
+        request.ik_request.group_name = 'ar_manipulator'
+        request.ik_request.pose_stamped = pose
+        request.ik_request.ik_link_name = 'ee_link'
+        request.ik_request.timeout.sec = 1
+
+        future = self.ik_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future)
+        if future.result() is not None:
+            return future.result().error_code.val == 1
+        return False
+
+    def get_quaternion_facing_z(self, z_axis):
         up = [0, 1, 0]
         x_axis = [
-            up[1]*dir_z - up[2]*dir_y,
-            up[2]*dir_x - up[0]*dir_z,
-            up[0]*dir_y - up[1]*dir_x,
+            up[1]*z_axis[2] - up[2]*z_axis[1],
+            up[2]*z_axis[0] - up[0]*z_axis[2],
+            up[0]*z_axis[1] - up[1]*z_axis[0],
         ]
         x_norm = math.sqrt(sum(v**2 for v in x_axis))
         x_axis = [v / x_norm for v in x_axis]
-
-        y_axis = [
-            dir_y*x_axis[2] - dir_z*x_axis[1],
-            dir_z*x_axis[0] - dir_x*x_axis[2],
-            dir_x*x_axis[1] - dir_y*x_axis[0],
+        new_y = [
+            z_axis[1]*x_axis[2] - z_axis[2]*x_axis[1],
+            z_axis[2]*x_axis[0] - z_axis[0]*x_axis[2],
+            z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0],
         ]
-
         rot_matrix = [
-            [x_axis[0], y_axis[0], dir_x],
-            [x_axis[1], y_axis[1], dir_y],
-            [x_axis[2], y_axis[2], dir_z],
+            [x_axis[0], new_y[0], z_axis[0], 0],
+            [x_axis[1], new_y[1], z_axis[1], 0],
+            [x_axis[2], new_y[2], z_axis[2], 0],
+            [0, 0, 0, 1],
         ]
-        quat = tf_transformations.quaternion_from_matrix([
-            [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
-            [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
-            [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
-            [0, 0, 0, 1]
-        ])
-        return quat
+        return tf_transformations.quaternion_from_matrix(rot_matrix)
 
-    def publish_point_arrows(self):
-        points = self.generate_valid_random_points()
-        for i, (x, y, z) in enumerate(points):
-            quat = self.compute_orientation_quat((x, y, z), self.center)
-
-            marker = Marker()
-            marker.header.frame_id = 'base_link'
-            marker.header.stamp = self.get_clock().now().to_msg()
-            marker.ns = 'ee_z_axis'
-            marker.id = i
-            marker.type = Marker.ARROW
-            marker.action = Marker.ADD
-            marker.scale.x = 0.01
-            marker.scale.y = 0.015
-            marker.scale.z = 0.1
-            marker.color.r = 0.0
-            marker.color.g = 0.0
-            marker.color.b = 1.0
-            marker.color.a = 1.0
-
-            start = Point(x=x, y=y, z=z)
-
-            rot_matrix = tf_transformations.quaternion_matrix(quat)
-            z_axis = [rot_matrix[0][2], rot_matrix[1][2], rot_matrix[2][2]]
-            arrow_length = 0.05
-
-            end = Point()
-            end.x = x + arrow_length * z_axis[0]
-            end.y = y + arrow_length * z_axis[1]
-            end.z = z + arrow_length * z_axis[2]
-
-            marker.points.append(start)
-            marker.points.append(end)
-
-            self.marker_pub.publish(marker)
-
-    def publish_center_marker(self):
+    def publish_arrow_marker(self, pose, z_axis):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'arc_center'
-        marker.id = 1000
-        marker.type = Marker.SPHERE
+        marker.ns = 'reachable_arrows'
+        marker.id = self.valid_marker_id
+        self.valid_marker_id += 1
+        marker.type = Marker.ARROW
         marker.action = Marker.ADD
-        marker.pose.position.x = self.center[0]
-        marker.pose.position.y = self.center[1]
-        marker.pose.position.z = self.center[2]
-        marker.scale.x = 0.02
-        marker.scale.y = 0.02
-        marker.scale.z = 0.02
-        marker.color.r = 1.0
+        marker.scale.x = 0.005
+        marker.scale.y = 0.01
+        marker.scale.z = 0.01
+        marker.color.r = 0.0
         marker.color.g = 0.0
-        marker.color.b = 0.0
+        marker.color.b = 1.0
         marker.color.a = 1.0
+
+        start = Point()
+        start.x = pose.pose.position.x
+        start.y = pose.pose.position.y
+        start.z = pose.pose.position.z
+
+        end = Point()
+        end.x = start.x + z_axis[0] * 0.05
+        end.y = start.y + z_axis[1] * 0.05
+        end.z = start.z + z_axis[2] * 0.05
+
+        marker.points.append(start)
+        marker.points.append(end)
+
         self.marker_pub.publish(marker)
 
-    def publish_inner_sphere_marker(self):
+    def publish_sphere_marker(self):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'radius_sphere'
-        marker.id = 1001
+        marker.ns = 'arc_volume'
+        marker.id = 9999
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = self.center[0]
@@ -151,15 +149,13 @@ class PointCloudVisualizer(Node):
         marker.color.r = 1.0
         marker.color.g = 0.0
         marker.color.b = 0.0
-        marker.color.a = 0.25  # 半透明
+        marker.color.a = 0.2
         self.marker_pub.publish(marker)
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PointCloudVisualizer()
+    node = ReachableArrowVisualizer()
     rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
