@@ -14,8 +14,8 @@ class PointCloudVisualizer(Node):
 
         # === パラメータ ===
         self.center = [0.0, -0.35, 0.35]
-        self.radius_threshold = 0.1  # 中心からこの距離未満の点は削除
-        self.num_points = 40         # 矢印の数
+        self.radius_threshold = 0.05  # 中心からこの距離未満の点は削除
+        self.num_points = 2000         # 矢印の数
 
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
