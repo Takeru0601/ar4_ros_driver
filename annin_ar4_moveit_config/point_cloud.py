@@ -13,7 +13,7 @@ class ZAxisVisualizer(Node):
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
         self.center = [0.0, -0.35, 0.35]
-        self.radius = 0.03  # 半径30mm
+        self.radius = 0.1  # 半径30mm
         self.steps = 100
 
         self.create_timer(1.0, self.publish_markers)
@@ -55,7 +55,7 @@ class ZAxisVisualizer(Node):
             z = 0.2 * math.cos(phi) + self.center[2]
 
             dist = math.sqrt((x - self.center[0])**2 + (y - self.center[1])**2 + (z - self.center[2])**2)
-            if dist < self.radius:
+            if dist < 0.05:　#一定距離内の矢印は削除
                 continue
 
             self.publish_arrow(x, y, z, marker_id)
