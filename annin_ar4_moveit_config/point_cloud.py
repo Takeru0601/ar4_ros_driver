@@ -14,7 +14,7 @@ class ZAxisVisualizer(Node):
 
         self.center = [0.0, -0.35, 0.35]
         self.radius = 0.1  # 半径30mm
-        self.steps = 100
+        self.steps = 1500
 
         self.create_timer(1.0, self.publish_markers)
 
