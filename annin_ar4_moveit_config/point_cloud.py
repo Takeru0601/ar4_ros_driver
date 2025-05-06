@@ -1,167 +1,155 @@
-#!/usr/bin/env python3
-
 import rclpy
 from rclpy.node import Node
+from moveit_msgs.srv import GetPositionIK
 from geometry_msgs.msg import PoseStamped, Point
 from visualization_msgs.msg import Marker
 import tf_transformations
-import numpy as np
 import math
-
-from moveit_commander.robot_trajectory import RobotTrajectory
-from moveit_commander import PlanningSceneInterface, RobotCommander
-import moveit_commander
+import time
 
 class ReachableArrowVisualizer(Node):
     def __init__(self):
         super().__init__('reachable_arrow_visualizer')
 
-        self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
-
-        # パラメータ
-        self.center = np.array([0.0, -0.35, 0.35])
+        # Parameters
+        self.center = [0.0, -0.33, 0.35]
         self.radius_threshold = 0.1
-        self.num_points = 300
+        self.num_points = 100
 
-        # MoveIt 初期化
-        moveit_commander.roscpp_initialize([])
-        self.robot = RobotCommander()
-        self.scene = PlanningSceneInterface()
-        self.group = moveit_commander.MoveGroupCommander('ar_manipulator')
+        self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
+        self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
+        while not self.ik_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('Waiting for IK service...')
 
-        self.get_logger().info('⚙️ Calculating reachable directions...')
-        self.visualize()
+        self.valid_marker_id = 0
+        self.generate_and_check_points()
+        self.publish_sphere_marker()
 
-    def visualize(self):
-        points = self.generate_points_on_sphere(self.num_points)
-        reachable = 0
-        marker_id = 0
+        self.get_logger().info('✅ Done')
+        rclpy.shutdown()
 
-        self.publish_transparent_sphere()
+    def generate_and_check_points(self):
+        phi_steps = int(math.sqrt(self.num_points))
+        theta_steps = self.num_points // phi_steps
 
-        for point in points:
-            direction = self.center - point
-            direction /= np.linalg.norm(direction)
+        for i in range(phi_steps):
+            phi = math.pi * i / phi_steps
+            for j in range(theta_steps):
+                theta = 2 * math.pi * j / theta_steps
 
-            pose = PoseStamped()
-            pose.header.frame_id = 'base_link'
-            pose.pose.position.x = float(point[0])
-            pose.pose.position.y = float(point[1])
-            pose.pose.position.z = float(point[2])
+                x = self.center[0] + self.radius_threshold * math.sin(phi) * math.cos(theta)
+                y = self.center[1] + self.radius_threshold * math.sin(phi) * math.sin(theta)
+                z = self.center[2] + self.radius_threshold * math.cos(phi)
 
-            quat = self.direction_to_quaternion(direction)
-            pose.pose.orientation.x = quat[0]
-            pose.pose.orientation.y = quat[1]
-            pose.pose.orientation.z = quat[2]
-            pose.pose.orientation.w = quat[3]
+                direction = [
+                    self.center[0] - x,
+                    self.center[1] - y,
+                    self.center[2] - z,
+                ]
+                norm = math.sqrt(sum(d**2 for d in direction))
+                z_axis = [d / norm for d in direction]
 
-            # 半径内ならスキップ
-            if np.linalg.norm(point - self.center) < self.radius_threshold:
-                continue
+                pose = PoseStamped()
+                pose.header.frame_id = 'base_link'
+                pose.pose.position.x = x
+                pose.pose.position.y = y
+                pose.pose.position.z = z
 
-            # IK確認
-            self.group.set_pose_target(pose)
-            plan = self.group.plan()
-            if not plan or not plan[0].joint_trajectory.points:
-                continue
+                quat = self.get_quaternion_facing_z(z_axis)
+                pose.pose.orientation.x = quat[0]
+                pose.pose.orientation.y = quat[1]
+                pose.pose.orientation.z = quat[2]
+                pose.pose.orientation.w = quat[3]
 
-            reachable += 1
-            self.publish_arrow(pose, marker_id)
-            marker_id += 1
+                if self.check_ik(pose):
+                    self.publish_arrow_marker(pose, z_axis)
+                time.sleep(0.01)
 
-        self.get_logger().info(f'✅ Done. Reachable: {reachable} / {self.num_points}')
+    def check_ik(self, pose):
+        request = GetPositionIK.Request()
+        request.ik_request.group_name = 'ar_manipulator'
+        request.ik_request.pose_stamped = pose
+        request.ik_request.ik_link_name = 'ee_link'
+        request.ik_request.timeout.sec = 1
 
-    def direction_to_quaternion(self, direction):
-        z_axis = direction
-        up = np.array([0.0, 1.0, 0.0])
-        x_axis = np.cross(up, z_axis)
-        x_axis /= np.linalg.norm(x_axis)
-        y_axis = np.cross(z_axis, x_axis)
+        future = self.ik_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future)
+        if future.result() is not None:
+            return future.result().error_code.val == 1
+        return False
 
-        rot_matrix = np.identity(4)
-        rot_matrix[0:3, 0] = x_axis
-        rot_matrix[0:3, 1] = y_axis
-        rot_matrix[0:3, 2] = z_axis
+    def get_quaternion_facing_z(self, z_axis):
+        up = [0, 1, 0]
+        x_axis = [
+            up[1]*z_axis[2] - up[2]*z_axis[1],
+            up[2]*z_axis[0] - up[0]*z_axis[2],
+            up[0]*z_axis[1] - up[1]*z_axis[0],
+        ]
+        x_norm = math.sqrt(sum(v**2 for v in x_axis))
+        x_axis = [v / x_norm for v in x_axis]
+        new_y = [
+            z_axis[1]*x_axis[2] - z_axis[2]*x_axis[1],
+            z_axis[2]*x_axis[0] - z_axis[0]*x_axis[2],
+            z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0],
+        ]
+        rot_matrix = [
+            [x_axis[0], new_y[0], z_axis[0], 0],
+            [x_axis[1], new_y[1], z_axis[1], 0],
+            [x_axis[2], new_y[2], z_axis[2], 0],
+            [0, 0, 0, 1],
+        ]
+        return tf_transformations.quaternion_from_matrix(rot_matrix)
 
-        quat = tf_transformations.quaternion_from_matrix(rot_matrix)
-        return quat
-
-    def generate_points_on_sphere(self, n):
-        points = []
-        offset = 2.0 / n
-        increment = math.pi * (3.0 - math.sqrt(5.0))  # Golden angle
-
-        for i in range(n):
-            y = ((i * offset) - 1) + (offset / 2)
-            r = math.sqrt(1 - y * y)
-            phi = i * increment
-            x = math.cos(phi) * r
-            z = math.sin(phi) * r
-
-            point = self.center + 0.15 * np.array([x, y, z])  # 半径0.15の球面上
-            points.append(point)
-        return points
-
-    def publish_arrow(self, pose, marker_id):
+    def publish_arrow_marker(self, pose, z_axis):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'ee_arrows'
-        marker.id = marker_id
+        marker.ns = 'reachable_arrows'
+        marker.id = self.valid_marker_id
+        self.valid_marker_id += 1
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
-        marker.scale.x = 0.01
-        marker.scale.y = 0.015
-        marker.scale.z = 0.05
+        marker.scale.x = 0.005
+        marker.scale.y = 0.01
+        marker.scale.z = 0.01
         marker.color.r = 0.0
         marker.color.g = 0.0
         marker.color.b = 1.0
         marker.color.a = 1.0
 
-        quat = (
-            pose.pose.orientation.x,
-            pose.pose.orientation.y,
-            pose.pose.orientation.z,
-            pose.pose.orientation.w,
-        )
-        rot_matrix = tf_transformations.quaternion_matrix(quat)
-        z_axis = rot_matrix[0:3, 2]
-
-        # 終点（エンドエフェクタ位置）
-        end = Point()
-        end.x = pose.pose.position.x
-        end.y = pose.pose.position.y
-        end.z = pose.pose.position.z
-
-        # 始点：Z軸方向に後ろへ 5cm
         start = Point()
-        start.x = end.x - 0.05 * z_axis[0]
-        start.y = end.y - 0.05 * z_axis[1]
-        start.z = end.z - 0.05 * z_axis[2]
+        start.x = pose.pose.position.x
+        start.y = pose.pose.position.y
+        start.z = pose.pose.position.z
+
+        end = Point()
+        end.x = start.x + z_axis[0] * 0.05
+        end.y = start.y + z_axis[1] * 0.05
+        end.z = start.z + z_axis[2] * 0.05
 
         marker.points.append(start)
         marker.points.append(end)
 
         self.marker_pub.publish(marker)
 
-    def publish_transparent_sphere(self):
+    def publish_sphere_marker(self):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'sphere'
+        marker.ns = 'arc_volume'
         marker.id = 9999
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
-        marker.pose.position.x = float(self.center[0])
-        marker.pose.position.y = float(self.center[1])
-        marker.pose.position.z = float(self.center[2])
+        marker.pose.position.x = self.center[0]
+        marker.pose.position.y = self.center[1]
+        marker.pose.position.z = self.center[2]
         marker.scale.x = self.radius_threshold * 2
         marker.scale.y = self.radius_threshold * 2
         marker.scale.z = self.radius_threshold * 2
-        marker.color.r = 0.8
-        marker.color.g = 0.8
-        marker.color.b = 0.8
-        marker.color.a = 0.3  # 半透明
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 0.2
         self.marker_pub.publish(marker)
 
 def main(args=None):
