@@ -13,7 +13,7 @@ class ReachableArrowVisualizer(Node):
 
         # Parameters
         self.center = [0.0, -0.33, 0.35]
-        self.radius_threshold = 0.15
+        self.radius_threshold = 0.10
         self.num_points = 200
 
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
