@@ -100,37 +100,44 @@ class ReachableArrowVisualizer(Node):
         ]
         return tf_transformations.quaternion_from_matrix(rot_matrix)
 
-    def publish_arrow_marker(self, pose, z_axis):
-        marker = Marker()
-        marker.header.frame_id = 'base_link'
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'reachable_arrows'
-        marker.id = self.valid_marker_id
-        self.valid_marker_id += 1
-        marker.type = Marker.ARROW
-        marker.action = Marker.ADD
-        marker.scale.x = 0.005
-        marker.scale.y = 0.01
-        marker.scale.z = 0.01
+   def publish_arrow_marker(self, pose, z_axis, reachable=True):
+    marker = Marker()
+    marker.header.frame_id = 'base_link'
+    marker.header.stamp = self.get_clock().now().to_msg()
+    marker.ns = 'reachable_arrows'
+    marker.id = self.valid_marker_id
+    self.valid_marker_id += 1
+    marker.type = Marker.ARROW
+    marker.action = Marker.ADD
+    marker.scale.x = 0.005
+    marker.scale.y = 0.01
+    marker.scale.z = 0.01
+
+    if reachable:
         marker.color.r = 0.0
         marker.color.g = 0.0
-        marker.color.b = 1.0
+        marker.color.b = 1.0  # 青
+        marker.color.a = 1.0
+    else:
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0  # 赤
         marker.color.a = 1.0
 
-        start = Point()
-        start.x = pose.pose.position.x
-        start.y = pose.pose.position.y
-        start.z = pose.pose.position.z
+    start = Point()
+    start.x = pose.pose.position.x
+    start.y = pose.pose.position.y
+    start.z = pose.pose.position.z
 
-        end = Point()
-        end.x = start.x + z_axis[0] * 0.05
-        end.y = start.y + z_axis[1] * 0.05
-        end.z = start.z + z_axis[2] * 0.05
+    end = Point()
+    end.x = start.x + z_axis[0] * 0.05
+    end.y = start.y + z_axis[1] * 0.05
+    end.z = start.z + z_axis[2] * 0.05
 
-        marker.points.append(start)
-        marker.points.append(end)
+    marker.points.append(start)
+    marker.points.append(end)
 
-        self.marker_pub.publish(marker)
+    self.marker_pub.publish(marker)
 
     def publish_sphere_marker(self):
         marker = Marker()
