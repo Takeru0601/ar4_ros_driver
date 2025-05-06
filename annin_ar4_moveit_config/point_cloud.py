@@ -61,8 +61,11 @@ class ReachableArrowVisualizer(Node):
                 pose.pose.orientation.z = quat[2]
                 pose.pose.orientation.w = quat[3]
 
-                if self.check_ik(pose):
-                    self.publish_arrow_marker(pose, z_axis)
+               if self.check_ik(pose):
+   　　　　　　　　 self.publish_arrow_marker(pose, z_axis, reachable=True)
+else:
+    self.publish_arrow_marker(pose, z_axis, reachable=False)
+
                 time.sleep(0.01)
 
     def check_ik(self, pose):
