@@ -12,7 +12,7 @@ class ReachableArrowVisualizer(Node):
         super().__init__('reachable_arrow_visualizer')
 
         # Parameters
-        self.center = [0.0, -0.33, 0.35]
+        self.center = [0.0, -0.23, 0.35]
         self.radius_threshold = 0.10
         self.num_points = 200
 
