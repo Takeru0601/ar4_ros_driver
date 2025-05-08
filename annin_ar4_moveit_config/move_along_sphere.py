@@ -19,8 +19,8 @@ class MoveOnSphereIntersections(Node):
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
         self.center = [0.0, -0.40, 0.30]
-        self.radius = 0.05
-        self.y_planes = [-0.35, -0.30, -0.25]
+        self.radius = 0.1
+        self.y_planes = [-0.40, -0.38, -0.36]
 
         self.arc_points = self.generate_intersection_points()
         self.current_index = 0
