@@ -18,7 +18,7 @@ class MoveOnSphereIntersections(Node):
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
-        self.center = [0.0, -0.33, 0.35]
+        self.center = [0.0, -0.40, 0.30]
         self.radius = 0.05
         self.y_planes = [-0.35, -0.30, -0.25]
 
