@@ -12,14 +12,17 @@ from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, 
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker
 
-class MoveAlongSphere(Node):
+class MoveOnSphereIntersections(Node):
     def __init__(self):
-        super().__init__('move_along_sphere_client')
+        super().__init__('move_on_sphere_intersections')
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
-
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
-        self.arc_points = self.generate_arc_points()
+        self.center = [0.0, -0.33, 0.35]
+        self.radius = 0.5
+        self.y_planes = [-0.35, -0.30, -0.25]
+
+        self.arc_points = self.generate_intersection_points()
         self.current_index = 0
 
         self.get_logger().info('Waiting for MoveGroup action server...')
@@ -30,85 +33,69 @@ class MoveAlongSphere(Node):
 
         self.send_next_goal()
 
-    def generate_arc_points(self):
+    def generate_intersection_points(self):
         points = []
-        self.radius = 0.1
-        self.center = [0.0, -0.33, 0.35]
-        fixed_y = self.center[1]
-        epsilon = 1e-4
+        steps = 36  # 180° / 5° = 36 steps
+        for y in self.y_planes:
+            dy = y - self.center[1]
+            if abs(dy) > self.radius:
+                continue
+            circle_radius = math.sqrt(self.radius**2 - dy**2)
+            for i in range(steps + 1):
+                theta = math.radians(180 * i / steps)
+                x = self.center[0] + circle_radius * math.cos(theta)
+                z = self.center[2] + circle_radius * math.sin(theta)
 
-        step = 0.01
-        range_min = -self.radius
-        range_max = self.radius
-        x_vals = [self.center[0] + i for i in self.frange(range_min, range_max, step)]
-        z_vals = [self.center[2] + i for i in self.frange(range_min, range_max, step)]
+                dir_x = self.center[0] - x
+                dir_y = self.center[1] - y
+                dir_z = self.center[2] - z
+                norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
+                dir_x /= norm
+                dir_y /= norm
+                dir_z /= norm
 
-        for x in x_vals:
-            for z in z_vals:
-                dx = x - self.center[0]
-                dz = z - self.center[2]
-                dist_sq = dx**2 + dz**2
-                if abs(dist_sq - self.radius**2) <= epsilon:
-                    pose = self.create_pose(x, fixed_y, z)
-                    points.append(pose)
+                up = [0, 1, 0]
+                x_axis = [
+                    up[1]*dir_z - up[2]*dir_y,
+                    up[2]*dir_x - up[0]*dir_z,
+                    up[0]*dir_y - up[1]*dir_x,
+                ]
+                x_norm = math.sqrt(sum(v**2 for v in x_axis))
+                x_axis = [v / x_norm for v in x_axis]
 
+                new_y = [
+                    dir_y*x_axis[2] - dir_z*x_axis[1],
+                    dir_z*x_axis[0] - dir_x*x_axis[2],
+                    dir_x*x_axis[1] - dir_y*x_axis[0],
+                ]
+
+                rot_matrix = [
+                    [x_axis[0], new_y[0], dir_x],
+                    [x_axis[1], new_y[1], dir_y],
+                    [x_axis[2], new_y[2], dir_z],
+                ]
+                quat = tf_transformations.quaternion_from_matrix([
+                    [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
+                    [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
+                    [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
+                    [0, 0, 0, 1]
+                ])
+
+                pose = PoseStamped()
+                pose.header.frame_id = 'base_link'
+                pose.pose.position.x = x
+                pose.pose.position.y = y
+                pose.pose.position.z = z
+                pose.pose.orientation.x = quat[0]
+                pose.pose.orientation.y = quat[1]
+                pose.pose.orientation.z = quat[2]
+                pose.pose.orientation.w = quat[3]
+                points.append(pose)
         return points
-
-    def frange(self, start, stop, step):
-        while start <= stop:
-            yield round(start, 4)
-            start += step
-
-    def create_pose(self, x, y, z):
-        dir_x = self.center[0] - x
-        dir_y = self.center[1] - y
-        dir_z = self.center[2] - z
-        norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
-        dir_x /= norm
-        dir_y /= norm
-        dir_z /= norm
-
-        up = [0, 1, 0]
-        x_axis = [
-            up[1]*dir_z - up[2]*dir_y,
-            up[2]*dir_x - up[0]*dir_z,
-            up[0]*dir_y - up[1]*dir_x,
-        ]
-        x_norm = math.sqrt(sum(v**2 for v in x_axis))
-        x_axis = [v / x_norm for v in x_axis]
-
-        new_y = [
-            dir_y*x_axis[2] - dir_z*x_axis[1],
-            dir_z*x_axis[0] - dir_x*x_axis[2],
-            dir_x*x_axis[1] - dir_y*x_axis[0],
-        ]
-
-        rot_matrix = [
-            [x_axis[0], new_y[0], dir_x],
-            [x_axis[1], new_y[1], dir_y],
-            [x_axis[2], new_y[2], dir_z],
-        ]
-        quat = tf_transformations.quaternion_from_matrix([
-            [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
-            [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
-            [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
-            [0, 0, 0, 1]
-        ])
-
-        pose = PoseStamped()
-        pose.header.frame_id = 'base_link'
-        pose.pose.position.x = x
-        pose.pose.position.y = y
-        pose.pose.position.z = z
-        pose.pose.orientation.x = quat[0]
-        pose.pose.orientation.y = quat[1]
-        pose.pose.orientation.z = quat[2]
-        pose.pose.orientation.w = quat[3]
-        return pose
 
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points):
-            self.get_logger().info('✅ All sphere points executed!')
+            self.get_logger().info('✅ All intersection points executed!')
             rclpy.shutdown()
             return
 
@@ -242,7 +229,7 @@ class MoveAlongSphere(Node):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'sphere_path'
+        marker.ns = 'sphere_arc'
         marker.id = 2000
         marker.type = Marker.LINE_STRIP
         marker.action = Marker.ADD
@@ -261,7 +248,7 @@ class MoveAlongSphere(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = MoveAlongSphere()
+    node = MoveOnSphereIntersections()
     rclpy.spin(node)
 
 if __name__ == '__main__':
