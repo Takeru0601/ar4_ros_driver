@@ -35,7 +35,7 @@ class MoveOnSphereIntersections(Node):
 
     def generate_intersection_points(self):
         points = []
-        steps = 36  # 180° / 5° = 36 steps
+        steps = 18  # 180° / 5° = 36 steps
 
         for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center[1]
