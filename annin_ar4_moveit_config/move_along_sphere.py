@@ -18,9 +18,9 @@ class MoveOnSphereIntersections(Node):
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
-        self.center = [0.0, -0.40, 0.30]
-        self.radius = 0.1
-        self.y_planes = [-0.40, -0.38, -0.36]
+        self.center = [0.0, -0.33, 0.35]
+        self.radius = 0.5
+        self.y_planes = [-0.35, -0.30, -0.25, -0.20, -0.15, -0.10]
 
         self.arc_points = self.generate_intersection_points()
         self.current_index = 0
@@ -36,16 +36,23 @@ class MoveOnSphereIntersections(Node):
     def generate_intersection_points(self):
         points = []
         steps = 36  # 180° / 5° = 36 steps
-        for y in self.y_planes:
+
+        for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center[1]
             if abs(dy) > self.radius:
                 continue
             circle_radius = math.sqrt(self.radius**2 - dy**2)
+
             for i in range(steps + 1):
-                theta = math.radians(180 * i / steps)
+                if plane_idx % 2 == 0:
+                    theta = math.radians(180 * i / steps)  # 左→右
+                else:
+                    theta = math.radians(180 * (steps - i) / steps)  # 右→左
+
                 x = self.center[0] + circle_radius * math.cos(theta)
                 z = self.center[2] + circle_radius * math.sin(theta)
 
+                # EEの+Z軸が球の中心を向くように姿勢を計算
                 dir_x = self.center[0] - x
                 dir_y = self.center[1] - y
                 dir_z = self.center[2] - z
@@ -186,15 +193,9 @@ class MoveOnSphereIntersections(Node):
             pose.pose.orientation.w,
         )
         rot_matrix = tf_transformations.quaternion_matrix(quat)
-
-        z_axis = [
-            rot_matrix[0][2],
-            rot_matrix[1][2],
-            rot_matrix[2][2],
-        ]
+        z_axis = [rot_matrix[0][2], rot_matrix[1][2], rot_matrix[2][2]]
 
         arrow_length = 0.05
-
         end = Point()
         end.x = start.x + arrow_length * z_axis[0]
         end.y = start.y + arrow_length * z_axis[1]
