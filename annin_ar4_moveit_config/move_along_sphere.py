@@ -11,12 +11,16 @@ from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker
+from moveit_msgs.msg import RobotState
+from sensor_msgs.msg import JointState
 
 class MoveOnSphereIntersections(Node):
     def __init__(self):
         super().__init__('move_on_sphere_intersections')
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
+        self.joint_state_sub = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
+        self.current_joint_state = None
 
         self.center = [0.0, -0.40, 0.30]
         self.radius = 0.1
@@ -24,6 +28,7 @@ class MoveOnSphereIntersections(Node):
 
         self.arc_points = self.generate_intersection_points()
         self.current_index = 0
+        self.reverse_toggle = False
 
         self.get_logger().info('Waiting for MoveGroup action server...')
         self._action_client.wait_for_server()
@@ -31,28 +36,30 @@ class MoveOnSphereIntersections(Node):
         self.publish_center_marker()
         self.publish_arc_line_marker()
 
-        self.send_next_goal()
+    def joint_state_callback(self, msg):
+        self.current_joint_state = msg
+
+        if self.current_index == 0:
+            self.send_next_goal()
 
     def generate_intersection_points(self):
         points = []
-        steps = 18  # 180° / 5° = 36 steps
-
-        for plane_idx, y in enumerate(self.y_planes):
+        steps = 18 #180度を何分割するか
+        toggle = False
+        for y in self.y_planes:
             dy = y - self.center[1]
             if abs(dy) > self.radius:
                 continue
             circle_radius = math.sqrt(self.radius**2 - dy**2)
-
-            for i in range(steps + 1):
-                if plane_idx % 2 == 0:
-                    theta = math.radians(180 * i / steps)  # 左→右
-                else:
-                    theta = math.radians(180 * (steps - i) / steps)  # 右→左
-
+            indices = range(steps + 1)
+            if toggle:
+                indices = reversed(indices)
+            toggle = not toggle
+            for i in indices:
+                theta = math.radians(180 * i / steps)
                 x = self.center[0] + circle_radius * math.cos(theta)
                 z = self.center[2] + circle_radius * math.sin(theta)
 
-                # EEの+Z軸が球の中心を向くように姿勢を計算
                 dir_x = self.center[0] - x
                 dir_y = self.center[1] - y
                 dir_z = self.center[2] - z
@@ -106,6 +113,10 @@ class MoveOnSphereIntersections(Node):
             rclpy.shutdown()
             return
 
+        if not self.current_joint_state:
+            self.get_logger().warn('⚠️ Joint state not yet received')
+            return
+
         pose = self.arc_points[self.current_index]
         self.get_logger().info(f'▶️ Sending point {self.current_index + 1}/{len(self.arc_points)}')
 
@@ -116,6 +127,10 @@ class MoveOnSphereIntersections(Node):
         req.group_name = 'ar_manipulator'
         req.max_velocity_scaling_factor = 0.3
         req.max_acceleration_scaling_factor = 0.3
+
+        robot_state = RobotState()
+        robot_state.joint_state = self.current_joint_state
+        req.start_state = robot_state
 
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = pose.header.frame_id
@@ -193,9 +208,15 @@ class MoveOnSphereIntersections(Node):
             pose.pose.orientation.w,
         )
         rot_matrix = tf_transformations.quaternion_matrix(quat)
-        z_axis = [rot_matrix[0][2], rot_matrix[1][2], rot_matrix[2][2]]
+
+        z_axis = [
+            rot_matrix[0][2],
+            rot_matrix[1][2],
+            rot_matrix[2][2],
+        ]
 
         arrow_length = 0.05
+
         end = Point()
         end.x = start.x + arrow_length * z_axis[0]
         end.y = start.y + arrow_length * z_axis[1]
