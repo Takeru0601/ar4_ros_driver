@@ -10,20 +10,21 @@ from geometry_msgs.msg import PoseStamped, Point
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint, RobotState
 from shape_msgs.msg import SolidPrimitive
-from visualization_msgs.msg import Marker
 from sensor_msgs.msg import JointState
+from visualization_msgs.msg import Marker
 
 class MoveOnSphereIntersections(Node):
     def __init__(self):
         super().__init__('move_on_sphere_intersections')
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
-        self.joint_state_sub = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 1)
-        self.current_joint_state = None
+        self.joint_state_sub = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
 
-        self.center = [0.0, -0.45, 0.20]
-        self.radius = 0.1
-        self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
+        self.latest_joint_state = None
+
+        self.center = [0.0, -0.33, 0.35]
+        self.radius = 0.5
+        self.y_planes = [-0.35, -0.30, -0.25, -0.20, -0.15, -0.10]
 
         self.arc_points = self.generate_intersection_points()
         self.current_index = 0
@@ -37,11 +38,11 @@ class MoveOnSphereIntersections(Node):
         self.send_next_goal()
 
     def joint_state_callback(self, msg):
-        self.current_joint_state = msg
+        self.latest_joint_state = msg
 
     def generate_intersection_points(self):
         points = []
-        steps = 18
+        steps = 36
 
         for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center[1]
@@ -50,7 +51,11 @@ class MoveOnSphereIntersections(Node):
             circle_radius = math.sqrt(self.radius**2 - dy**2)
 
             for i in range(steps + 1):
-                theta = math.radians(180 * i / steps) if plane_idx % 2 == 0 else math.radians(180 * (steps - i) / steps)
+                if plane_idx % 2 == 0:
+                    theta = math.radians(180 * i / steps)
+                else:
+                    theta = math.radians(180 * (steps - i) / steps)
+
                 x = self.center[0] + circle_radius * math.cos(theta)
                 z = self.center[2] + circle_radius * math.sin(theta)
 
@@ -107,9 +112,13 @@ class MoveOnSphereIntersections(Node):
             rclpy.shutdown()
             return
 
+        if self.latest_joint_state is None:
+            self.get_logger().warn('⚠️ Waiting for joint_states...')
+            self.create_timer(0.1, self.send_next_goal)
+            return
+
         pose = self.arc_points[self.current_index]
         self.get_logger().info(f'▶️ Sending point {self.current_index + 1}/{len(self.arc_points)}')
-
         self.publish_ee_z_axis(pose, self.current_index)
 
         goal_msg = MoveGroup.Goal()
@@ -118,10 +127,9 @@ class MoveOnSphereIntersections(Node):
         req.max_velocity_scaling_factor = 0.3
         req.max_acceleration_scaling_factor = 0.3
 
-        if self.current_joint_state:
-            robot_state = RobotState()
-            robot_state.joint_state = self.current_joint_state
-            req.start_state = robot_state
+        rs = RobotState()
+        rs.joint_state = self.latest_joint_state
+        req.start_state = rs
 
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = pose.header.frame_id
@@ -132,7 +140,7 @@ class MoveOnSphereIntersections(Node):
 
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
-        box.dimensions = [0.01, 0.01, 0.01]
+        box.dimensions = [0.002, 0.002, 0.002]  # 1mm 精度
         position_constraint.constraint_region.primitives.append(box)
         position_constraint.constraint_region.primitive_poses.append(pose.pose)
 
@@ -140,9 +148,9 @@ class MoveOnSphereIntersections(Node):
         orientation_constraint.header.frame_id = pose.header.frame_id
         orientation_constraint.link_name = 'ee_link'
         orientation_constraint.orientation = pose.pose.orientation
-        orientation_constraint.absolute_x_axis_tolerance = 0.1
-        orientation_constraint.absolute_y_axis_tolerance = 0.1
-        orientation_constraint.absolute_z_axis_tolerance = 0.1
+        orientation_constraint.absolute_x_axis_tolerance = 0.05
+        orientation_constraint.absolute_y_axis_tolerance = 0.05
+        orientation_constraint.absolute_z_axis_tolerance = 0.05
         orientation_constraint.weight = 1.0
 
         goal_constraints = Constraints()
@@ -167,7 +175,7 @@ class MoveOnSphereIntersections(Node):
 
     def get_result_callback(self, future):
         result = future.result().result
-        self.get_logger().info(f'🎯 Result received: {result.error_code} (index {self.current_index})')
+        self.get_logger().info(f'🎯 Result received: {result.error_code}')
         self.current_index += 1
         self.send_next_goal()
 
