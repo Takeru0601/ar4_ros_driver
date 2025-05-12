@@ -149,7 +149,7 @@ class MoveOnSphereIntersections(Node):
 
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
-        box.dimensions = [0.002, 0.002, 0.002]
+        box.dimensions = [0.01, 0.01, 0.01]
         position_constraint.constraint_region.primitives.append(box)
         position_constraint.constraint_region.primitive_poses.append(pose.pose)
 
@@ -157,9 +157,9 @@ class MoveOnSphereIntersections(Node):
         orientation_constraint.header.frame_id = pose.header.frame_id
         orientation_constraint.link_name = 'ee_link'
         orientation_constraint.orientation = pose.pose.orientation
-        orientation_constraint.absolute_x_axis_tolerance = 0.05
-        orientation_constraint.absolute_y_axis_tolerance = 0.05
-        orientation_constraint.absolute_z_axis_tolerance = 0.05
+        orientation_constraint.absolute_x_axis_tolerance = 0.1
+        orientation_constraint.absolute_y_axis_tolerance = 0.1
+        orientation_constraint.absolute_z_axis_tolerance = 0.1
         orientation_constraint.weight = 1.0
 
         goal_constraints = Constraints()
