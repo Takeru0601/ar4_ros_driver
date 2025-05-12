@@ -22,9 +22,9 @@ class MoveOnSphereIntersections(Node):
 
         self.latest_joint_state = None
 
-        self.center = [0.0, -0.33, 0.35]
-        self.radius = 0.5
-        self.y_planes = [-0.35, -0.30, -0.25, -0.20, -0.15, -0.10]
+        self.center = [0.0, -0.45, 0.20]
+        self.radius = 0.1
+        self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
 
         self.arc_points = self.generate_intersection_points()
         self.current_index = 0
@@ -42,7 +42,7 @@ class MoveOnSphereIntersections(Node):
 
     def generate_intersection_points(self):
         points = []
-        steps = 36
+        steps = 18
 
         for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center[1]
