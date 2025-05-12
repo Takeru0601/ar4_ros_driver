@@ -21,7 +21,7 @@ class MoveOnSphereIntersections(Node):
         self.joint_state_sub = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 1)
         self.current_joint_state = None
 
-        self.center = [0.0, -0.40, 0.20]
+        self.center = [0.0, -0.45, 0.20]
         self.radius = 0.1
         self.y_planes = [-0.40, -0.38, -0.36, -0.34, -0.32, -0.30]
 
