@@ -23,7 +23,7 @@ class MoveOnSphereIntersections(Node):
 
         self.center = [0.0, -0.45, 0.20]
         self.radius = 0.1
-        self.y_planes = [-0.40, -0.38, -0.36, -0.34, -0.32, -0.30]
+        self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
 
         self.arc_points = self.generate_intersection_points()
         self.current_index = 0
