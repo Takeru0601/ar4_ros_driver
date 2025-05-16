@@ -21,24 +21,21 @@ class MoveOnSphereIntersections(Node):
         self.joint_state_sub = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
 
         self.latest_joint_state = None
-        self.arc_points = []
-        self.valid_goals = []
 
         self.center = [0.0, -0.45, 0.20]
         self.radius = 0.1
         self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
 
+        self.arc_points = self.generate_intersection_points()
         self.current_index = 0
-        self.check_index = 0
 
         self.get_logger().info('Waiting for MoveGroup action server...')
         self._action_client.wait_for_server()
 
-        self.arc_points = self.generate_intersection_points()
         self.publish_center_marker()
         self.publish_arc_line_marker()
 
-        self.validate_all_goals()
+        self.send_next_goal()
 
     def joint_state_callback(self, msg):
         self.latest_joint_state = msg
@@ -54,7 +51,11 @@ class MoveOnSphereIntersections(Node):
             circle_radius = math.sqrt(self.radius**2 - dy**2)
 
             for i in range(steps + 1):
-                theta = math.radians(180 * i / steps) if plane_idx % 2 == 0 else math.radians(180 * (steps - i) / steps)
+                if plane_idx % 2 == 0:
+                    theta = math.radians(180 * i / steps)
+                else:
+                    theta = math.radians(180 * (steps - i) / steps)
+
                 x = self.center[0] + circle_radius * math.cos(theta)
                 z = self.center[2] + circle_radius * math.sin(theta)
 
@@ -105,31 +106,21 @@ class MoveOnSphereIntersections(Node):
                 points.append(pose)
         return points
 
-    def validate_all_goals(self):
-        self.get_logger().info('🔍 Validating all goal poses...')
+    def send_next_goal(self):
+        if self.current_index >= len(self.arc_points):
+            self.get_logger().info('✅ All intersection points executed!')
+            rclpy.shutdown()
+            return
+
         if self.latest_joint_state is None:
             self.get_logger().warn('⚠️ Waiting for joint_states...')
-            self.create_timer(0.1, self.validate_all_goals)
-            return
-        self.validate_next_goal()
-
-    def validate_next_goal(self):
-        if self.check_index >= len(self.arc_points):
-            self.get_logger().info(f'✅ {len(self.valid_goals)} valid goals found. Starting execution...')
-            if not self.valid_goals:
-                self.get_logger().error('❌ No valid plans found.')
-                rclpy.shutdown()
-            else:
-                self.current_index = 0
-                self.send_next_goal()
+            self.create_timer(0.1, self.send_next_goal)
             return
 
-        pose = self.arc_points[self.check_index]
-        self.try_plan(pose, self.check_index, planning_only=True)
-        self.check_index += 1
-        self.create_timer(0.01, self.validate_next_goal)
+        pose = self.arc_points[self.current_index]
+        self.get_logger().info(f'▶️ Sending point {self.current_index + 1}/{len(self.arc_points)}')
+        self.publish_ee_z_axis(pose, self.current_index)
 
-    def try_plan(self, pose, index, planning_only=False):
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
         req.group_name = 'ar_manipulator'
@@ -149,7 +140,7 @@ class MoveOnSphereIntersections(Node):
 
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
-        box.dimensions = [0.01, 0.01, 0.01]
+        box.dimensions = [0.01, 0.01, 0.01]  # 
         position_constraint.constraint_region.primitives.append(box)
         position_constraint.constraint_region.primitive_poses.append(pose.pose)
 
@@ -169,33 +160,24 @@ class MoveOnSphereIntersections(Node):
         req.goal_constraints.append(goal_constraints)
         goal_msg.request = req
 
-        future = self._action_client.send_goal_async(goal_msg)
-        def goal_response_callback(fut):
-            goal_handle = fut.result()
-            if not goal_handle.accepted:
-                return
-            result_future = goal_handle.get_result_async()
-            def result_callback(res_fut):
-                result = res_fut.result().result
-                if result.error_code.val == 1:
-                    if planning_only:
-                        self.valid_goals.append(pose)
-                    else:
-                        self.get_logger().info(f'🎯 Executed point {self.current_index + 1}/{len(self.valid_goals)}')
-                        self.current_index += 1
-                        self.send_next_goal()
-            result_future.add_done_callback(result_callback)
-        future.add_done_callback(goal_response_callback)
+        self._send_goal_future = self._action_client.send_goal_async(goal_msg)
+        self._send_goal_future.add_done_callback(self.goal_response_callback)
 
-    def send_next_goal(self):
-        if self.current_index >= len(self.valid_goals):
-            self.get_logger().info('✅ All planned motions executed.')
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error('❌ Goal rejected')
             rclpy.shutdown()
             return
-        pose = self.valid_goals[self.current_index]
-        self.get_logger().info(f'▶️ Sending goal {self.current_index + 1}/{len(self.valid_goals)}')
-        self.publish_ee_z_axis(pose, self.current_index)
-        self.try_plan(pose, self.current_index, planning_only=False)
+        self.get_logger().info('✅ Goal accepted')
+        self._get_result_future = goal_handle.get_result_async()
+        self._get_result_future.add_done_callback(self.get_result_callback)
+
+    def get_result_callback(self, future):
+        result = future.result().result
+        self.get_logger().info(f'🎯 Result received: {result.error_code}')
+        self.current_index += 1
+        self.send_next_goal()
 
     def publish_ee_z_axis(self, pose, id_num):
         marker = Marker()
