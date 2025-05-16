@@ -8,9 +8,8 @@ import math
 import tf_transformations
 from geometry_msgs.msg import PoseStamped, Point
 from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint, RobotState
+from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
 from shape_msgs.msg import SolidPrimitive
-from sensor_msgs.msg import JointState
 from visualization_msgs.msg import Marker
 
 class MoveOnSphereIntersections(Node):
@@ -18,9 +17,6 @@ class MoveOnSphereIntersections(Node):
         super().__init__('move_on_sphere_intersections')
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
-        self.joint_state_sub = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
-
-        self.latest_joint_state = None
 
         self.center = [0.0, -0.45, 0.20]
         self.radius = 0.1
@@ -37,12 +33,9 @@ class MoveOnSphereIntersections(Node):
 
         self.send_next_goal()
 
-    def joint_state_callback(self, msg):
-        self.latest_joint_state = msg
-
     def generate_intersection_points(self):
         points = []
-        steps = 18
+        steps = 18  # 180° / 5° = 36 steps
 
         for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center[1]
@@ -52,13 +45,14 @@ class MoveOnSphereIntersections(Node):
 
             for i in range(steps + 1):
                 if plane_idx % 2 == 0:
-                    theta = math.radians(180 * i / steps)
+                    theta = math.radians(180 * i / steps)  # 左→右
                 else:
-                    theta = math.radians(180 * (steps - i) / steps)
+                    theta = math.radians(180 * (steps - i) / steps)  # 右→左
 
                 x = self.center[0] + circle_radius * math.cos(theta)
                 z = self.center[2] + circle_radius * math.sin(theta)
 
+                # EEの+Z軸が球の中心を向くように姿勢を計算
                 dir_x = self.center[0] - x
                 dir_y = self.center[1] - y
                 dir_z = self.center[2] - z
@@ -112,13 +106,9 @@ class MoveOnSphereIntersections(Node):
             rclpy.shutdown()
             return
 
-        if self.latest_joint_state is None:
-            self.get_logger().warn('⚠️ Waiting for joint_states...')
-            self.create_timer(0.1, self.send_next_goal)
-            return
-
         pose = self.arc_points[self.current_index]
         self.get_logger().info(f'▶️ Sending point {self.current_index + 1}/{len(self.arc_points)}')
+
         self.publish_ee_z_axis(pose, self.current_index)
 
         goal_msg = MoveGroup.Goal()
@@ -126,10 +116,6 @@ class MoveOnSphereIntersections(Node):
         req.group_name = 'ar_manipulator'
         req.max_velocity_scaling_factor = 0.3
         req.max_acceleration_scaling_factor = 0.3
-
-        rs = RobotState()
-        rs.joint_state = self.latest_joint_state
-        req.start_state = rs
 
         position_constraint = PositionConstraint()
         position_constraint.header.frame_id = pose.header.frame_id
@@ -140,7 +126,7 @@ class MoveOnSphereIntersections(Node):
 
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
-        box.dimensions = [0.01, 0.01, 0.01]  # 精度
+        box.dimensions = [0.01, 0.01, 0.01]
         position_constraint.constraint_region.primitives.append(box)
         position_constraint.constraint_region.primitive_poses.append(pose.pose)
 
