@@ -2,51 +2,65 @@
 
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionClient
+
 import math
 import tf_transformations
 from geometry_msgs.msg import PoseStamped, Point
+from moveit_msgs.action import MoveGroup
+from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from moveit_msgs.srv import GetPositionIK
-from moveit_msgs.msg import PositionIKRequest
 
-class MoveOnSphereTraj(Node):
+class MoveOnSphereIntersections(Node):
     def __init__(self):
-        super().__init__('move_on_sphere_traj')
-        self.center = [0.0, -0.45, 0.20]
-        self.radius = 0.1
-        self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
-        self.tcp_speed = 0.05  # [m/s]
-
-        self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
-        self.traj_pub = self.create_publisher(JointTrajectory, '/joint_trajectory', 10)
+        super().__init__('move_on_sphere_intersections')
+        self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
-        self.get_logger().info('🔄 Waiting for IK service...')
-        self.ik_client.wait_for_service()
+        # 球の中心と半径
+        self.center = [0.0, -0.45, 0.20]
+        self.radius = 0.1
+        # 塗装断面となる平面群 (y = 定数)
+        self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
+        # 各平面の法線ベクトル (すべて y 軸方向)
+        self.plane_normals = [[0.0, 1.0, 0.0] for _ in self.y_planes]
 
-        self.pose_list = self.generate_intersection_points()
+        # 交線上の点と姿勢を生成
+        self.arc_points = self.generate_intersection_points()
+        self.current_index = 0
+
+        self.get_logger().info('Waiting for MoveGroup action server...')
+        self._action_client.wait_for_server()
+
         self.publish_center_marker()
         self.publish_arc_line_marker()
 
-        self.send_trajectory()
+        self.send_next_goal()
 
     def generate_intersection_points(self):
         points = []
-        steps = 18
+        steps = 18  # 180° / 5°
+
         for plane_idx, y in enumerate(self.y_planes):
+            normal = self.plane_normals[plane_idx]
             dy = y - self.center[1]
             if abs(dy) > self.radius:
                 continue
             circle_radius = math.sqrt(self.radius**2 - dy**2)
 
             for i in range(steps + 1):
-                theta = math.radians(180 * i / steps) if plane_idx % 2 == 0 else math.radians(180 * (steps - i) / steps)
+                # 左右ジグザグ走査
+                if plane_idx % 2 == 0:
+                    theta = math.radians(180 * i / steps)
+                else:
+                    theta = math.radians(180 * (steps - i) / steps)
+
+                # 球面断面の座標
                 x = self.center[0] + circle_radius * math.cos(theta)
                 z = self.center[2] + circle_radius * math.sin(theta)
 
-                # 姿勢計算（EEのZ軸が球の中心を向く）
+                # 1) 球の中心へのベクトルを計算
                 dir_x = self.center[0] - x
                 dir_y = self.center[1] - y
                 dir_z = self.center[2] - z
@@ -55,7 +69,19 @@ class MoveOnSphereTraj(Node):
                 dir_y /= norm
                 dir_z /= norm
 
-                up = [0, 1, 0]
+                # 2) 平面法線との内積を引いて射影
+                dot = dir_x * normal[0] + dir_y * normal[1] + dir_z * normal[2]
+                dir_x -= dot * normal[0]
+                dir_y -= dot * normal[1]
+                dir_z -= dot * normal[2]
+                # 正規化
+                norm2 = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
+                dir_x /= norm2
+                dir_y /= norm2
+                dir_z /= norm2
+
+                # 3) 法線を平面内のベクトルとして扱い、直行基底を作成
+                up = [0.0, 1.0, 0.0]
                 x_axis = [
                     up[1]*dir_z - up[2]*dir_y,
                     up[2]*dir_x - up[0]*dir_z,
@@ -63,7 +89,6 @@ class MoveOnSphereTraj(Node):
                 ]
                 x_norm = math.sqrt(sum(v**2 for v in x_axis))
                 x_axis = [v / x_norm for v in x_axis]
-
                 new_y = [
                     dir_y*x_axis[2] - dir_z*x_axis[1],
                     dir_z*x_axis[0] - dir_x*x_axis[2],
@@ -76,12 +101,13 @@ class MoveOnSphereTraj(Node):
                     [x_axis[2], new_y[2], dir_z],
                 ]
                 quat = tf_transformations.quaternion_from_matrix([
-                    [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
-                    [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
-                    [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
-                    [0, 0, 0, 1]
+                    [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0.0],
+                    [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0.0],
+                    [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0.0],
+                    [0.0, 0.0, 0.0, 1.0]
                 ])
 
+                # PoseStamped にまとめる
                 pose = PoseStamped()
                 pose.header.frame_id = 'base_link'
                 pose.pose.position.x = x
@@ -94,64 +120,131 @@ class MoveOnSphereTraj(Node):
                 points.append(pose)
         return points
 
-    def send_trajectory(self):
-        traj = JointTrajectory()
-        traj.joint_names = ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6']
-        time_from_start = 0.0
-        prev_pose = None
+    def send_next_goal(self):
+        if self.current_index >= len(self.arc_points):
+            self.get_logger().info('✅ All intersection points executed!')
+            rclpy.shutdown()
+            return
 
-        for i, pose in enumerate(self.pose_list):
-            req = PositionIKRequest()
-            req.group_name = 'ar_manipulator'
-            req.robot_state.is_diff = True
-            req.ik_link_name = 'ee_link'
-            req.pose_stamped = pose
+        pose = self.arc_points[self.current_index]
+        self.get_logger().info(f'▶️ Sending point {self.current_index + 1}/{len(self.arc_points)}')
+        self.publish_ee_z_axis(pose, self.current_index)
 
-            srv = GetPositionIK.Request()
-            srv.ik_request = req
+        goal_msg = MoveGroup.Goal()
+        req = MotionPlanRequest()
+        req.group_name = 'ar_manipulator'
+        req.max_velocity_scaling_factor = 0.3
+        req.max_acceleration_scaling_factor = 0.3
 
-            future = self.ik_client.call_async(srv)
-            rclpy.spin_until_future_complete(self, future)
+        # 位置制約
+        position_constraint = PositionConstraint()
+        position_constraint.header.frame_id = pose.header.frame_id
+        position_constraint.link_name = 'ee_link'
+        position_constraint.target_point_offset.x = 0.0
+        position_constraint.target_point_offset.y = 0.0
+        position_constraint.target_point_offset.z = 0.0
 
-            if not future.result() or future.result().error_code.val != 1:
-                self.get_logger().warn(f'❌ IK failed at point {i}')
-                continue
+        box = SolidPrimitive()
+        box.type = SolidPrimitive.BOX
+        box.dimensions = [0.01, 0.01, 0.01]
+        position_constraint.constraint_region.primitives.append(box)
+        position_constraint.constraint_region.primitive_poses.append(pose.pose)
 
-            joint_state = future.result().solution.joint_state
-            point = JointTrajectoryPoint()
-            point.positions = joint_state.position[:6]
+        # 姿勢制約
+        orientation_constraint = OrientationConstraint()
+        orientation_constraint.header.frame_id = pose.header.frame_id
+        orientation_constraint.link_name = 'ee_link'
+        orientation_constraint.orientation = pose.pose.orientation
+        # 各軸トレランスを小さくして精度を担保
+        orientation_constraint.absolute_x_axis_tolerance = 0.01
+        orientation_constraint.absolute_y_axis_tolerance = 0.01
+        orientation_constraint.absolute_z_axis_tolerance = 0.01
+        orientation_constraint.weight = 1.0
 
-            if prev_pose:
-                dx = pose.pose.position.x - prev_pose.pose.position.x
-                dy = pose.pose.position.y - prev_pose.pose.position.y
-                dz = pose.pose.position.z - prev_pose.pose.position.z
-                distance = math.sqrt(dx**2 + dy**2 + dz**2)
-                dt = distance / self.tcp_speed
-                time_from_start += dt
-            else:
-                time_from_start = 0.0
+        # ゴールに追加
+        goal_constraints = Constraints()
+        goal_constraints.position_constraints.append(position_constraint)
+        goal_constraints.orientation_constraints.append(orientation_constraint)
+        req.goal_constraints.append(goal_constraints)
+        goal_msg.request = req
 
-            point.time_from_start.sec = int(time_from_start)
-            point.time_from_start.nanosec = int((time_from_start % 1.0) * 1e9)
-            traj.points.append(point)
-            prev_pose = pose
+        self._send_goal_future = self._action_client.send_goal_async(goal_msg)
+        self._send_goal_future.add_done_callback(self.goal_response_callback)
 
-        self.traj_pub.publish(traj)
-        self.get_logger().info('🚀 Trajectory sent!')
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error('❌ Goal rejected')
+            rclpy.shutdown()
+            return
+        self.get_logger().info('✅ Goal accepted')
+        self._get_result_future = goal_handle.get_result_async()
+        self._get_result_future.add_done_callback(self.get_result_callback)
+
+    def get_result_callback(self, future):
+        result = future.result().result
+        self.get_logger().info(f'🎯 Result received: {result.error_code}')
+        self.current_index += 1
+        self.send_next_goal()
+
+    # 以下、可視化用関数は変更なし
+    def publish_ee_z_axis(self, pose, id_num):
+        marker = Marker()
+        marker.header.frame_id = 'base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'ee_z_axis'
+        marker.id = id_num
+        marker.type = Marker.ARROW
+        marker.action = Marker.ADD
+        marker.scale.x = 0.01
+        marker.scale.y = 0.015
+        marker.scale.z = 0.1
+        marker.color.r = 0.0
+        marker.color.g = 0.0
+        marker.color.b = 1.0
+        marker.color.a = 1.0
+
+        start = Point()
+        start.x = pose.pose.position.x
+        start.y = pose.pose.position.y
+        start.z = pose.pose.position.z
+
+        quat = (
+            pose.pose.orientation.x,
+            pose.pose.orientation.y,
+            pose.pose.orientation.z,
+            pose.pose.orientation.w,
+        )
+        rot_matrix = tf_transformations.quaternion_matrix(quat)
+        z_axis = [rot_matrix[0][2], rot_matrix[1][2], rot_matrix[2][2]]
+
+        arrow_length = 0.05
+        end = Point()
+        end.x = start.x + arrow_length * z_axis[0]
+        end.y = start.y + arrow_length * z_axis[1]
+        end.z = start.z + arrow_length * z_axis[2]
+
+        marker.points.append(start)
+        marker.points.append(end)
+        self.marker_pub.publish(marker)
 
     def publish_center_marker(self):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'center'
-        marker.id = 1
+        marker.ns = 'sphere_center'
+        marker.id = 1000
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = self.center[0]
         marker.pose.position.y = self.center[1]
         marker.pose.position.z = self.center[2]
-        marker.scale.x = marker.scale.y = marker.scale.z = 0.02
+        marker.scale.x = 0.02
+        marker.scale.y = 0.02
+        marker.scale.z = 0.02
         marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
         marker.color.a = 1.0
         self.marker_pub.publish(marker)
 
@@ -159,26 +252,27 @@ class MoveOnSphereTraj(Node):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'arc_line'
-        marker.id = 2
+        marker.ns = 'sphere_arc'
+        marker.id = 2000
         marker.type = Marker.LINE_STRIP
         marker.action = Marker.ADD
         marker.scale.x = 0.005
+        marker.color.r = 0.0
         marker.color.g = 1.0
+        marker.color.b = 0.0
         marker.color.a = 1.0
-        for pose in self.pose_list:
-            pt = Point()
-            pt.x = pose.pose.position.x
-            pt.y = pose.pose.position.y
-            pt.z = pose.pose.position.z
-            marker.points.append(pt)
+        for pose in self.arc_points:
+            point = Point()
+            point.x = pose.pose.position.x
+            point.y = pose.pose.position.y
+            point.z = pose.pose.position.z
+            marker.points.append(point)
         self.marker_pub.publish(marker)
 
 def main(args=None):
     rclpy.init(args=args)
-    node = MoveOnSphereTraj()
-    rclpy.shutdown()
+    node = MoveOnSphereIntersections()
+    rclpy.spin(node)
 
 if __name__ == '__main__':
     main()
-
