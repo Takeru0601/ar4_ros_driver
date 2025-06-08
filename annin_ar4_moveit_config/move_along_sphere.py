@@ -12,48 +12,50 @@ from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, 
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker
 
-class MoveOnSlidingSphere(Node):
+class MoveOnSphereIntersections(Node):
     def __init__(self):
-        super().__init__('move_on_sliding_sphere')
+        super().__init__('move_on_sphere_intersections')
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
-        self.center_base = [0.0, -0.45, 0.0]
-        self.radius = 0.2
+        self.center = [0.0, -0.45, 0.0] 
+        self.radius = 0.2 
         self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
 
-        self.arc_points_and_centers = self.generate_intersection_points_with_slide()
+        self.arc_points = self.generate_intersection_points()
         self.current_index = 0
 
         self.get_logger().info('Waiting for MoveGroup action server...')
         self._action_client.wait_for_server()
 
+        self.publish_center_marker()
+        self.publish_arc_line_marker()
+
         self.send_next_goal()
 
-    def generate_intersection_points_with_slide(self):
+    def generate_intersection_points(self):
         points = []
-        steps = 18
-        slide_step = 0.01
-        x_slide_base = 0.0
+        steps = 18  # 180° / 5° = 36 steps
 
         for plane_idx, y in enumerate(self.y_planes):
-            dy = y - self.center_base[1]
+            dy = y - self.center[1]
             if abs(dy) > self.radius:
                 continue
             circle_radius = math.sqrt(self.radius**2 - dy**2)
 
             for i in range(steps + 1):
-                theta = math.radians(180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps)
-                x = self.center_base[0] + circle_radius * math.cos(theta) + x_slide_base
-                z = self.center_base[2] + circle_radius * math.sin(theta)
+                if plane_idx % 2 == 0:
+                    theta = math.radians(180 * i / steps)  # 左→右
+                else:
+                    theta = math.radians(180 * (steps - i) / steps)  # 右→左
 
-                center_x = self.center_base[0] + x_slide_base
-                center_y = self.center_base[1]
-                center_z = self.center_base[2]
+                x = self.center[0] + circle_radius * math.cos(theta)
+                z = self.center[2] + circle_radius * math.sin(theta)
 
-                dir_x = center_x - x
-                dir_y = center_y - y
-                dir_z = center_z - z
+                # EEの+Z軸が球の中心を向くように姿勢を計算
+                dir_x = self.center[0] - x
+                dir_y = self.center[1] - y
+                dir_z = self.center[2] - z
                 norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
                 dir_x /= norm
                 dir_y /= norm
@@ -95,19 +97,18 @@ class MoveOnSlidingSphere(Node):
                 pose.pose.orientation.y = quat[1]
                 pose.pose.orientation.z = quat[2]
                 pose.pose.orientation.w = quat[3]
-
-                points.append((pose, [center_x, center_y, center_z]))
-            x_slide_base += slide_step
+                points.append(pose)
         return points
 
     def send_next_goal(self):
-        if self.current_index >= len(self.arc_points_and_centers):
+        if self.current_index >= len(self.arc_points):
             self.get_logger().info('✅ All intersection points executed!')
             rclpy.shutdown()
             return
 
-        pose, center = self.arc_points_and_centers[self.current_index]
-        self.publish_center_marker(center)
+        pose = self.arc_points[self.current_index]
+        self.get_logger().info(f'▶️ Sending point {self.current_index + 1}/{len(self.arc_points)}')
+
         self.publish_ee_z_axis(pose, self.current_index)
 
         goal_msg = MoveGroup.Goal()
@@ -164,26 +165,6 @@ class MoveOnSlidingSphere(Node):
         self.current_index += 1
         self.send_next_goal()
 
-    def publish_center_marker(self, center):
-        marker = Marker()
-        marker.header.frame_id = 'base_link'
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'sphere_center'
-        marker.id = 1000
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.pose.position.x = center[0]
-        marker.pose.position.y = center[1]
-        marker.pose.position.z = center[2]
-        marker.scale.x = self.radius * 2
-        marker.scale.y = self.radius * 2
-        marker.scale.z = self.radius * 2
-        marker.color.r = 1.0
-        marker.color.g = 0.3
-        marker.color.b = 0.3
-        marker.color.a = 0.5
-        self.marker_pub.publish(marker)
-
     def publish_ee_z_axis(self, pose, id_num):
         marker = Marker()
         marker.header.frame_id = 'base_link'
@@ -225,9 +206,50 @@ class MoveOnSlidingSphere(Node):
 
         self.marker_pub.publish(marker)
 
+    def publish_center_marker(self):
+        marker = Marker()
+        marker.header.frame_id = 'base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'sphere_center'
+        marker.id = 1000
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = self.center[0]
+        marker.pose.position.y = self.center[1]
+        marker.pose.position.z = self.center[2]
+        marker.scale.x = 0.02
+        marker.scale.y = 0.02
+        marker.scale.z = 0.02
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0
+        self.marker_pub.publish(marker)
+
+    def publish_arc_line_marker(self):
+        marker = Marker()
+        marker.header.frame_id = 'base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'sphere_arc'
+        marker.id = 2000
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        marker.scale.x = 0.005
+        marker.color.r = 0.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0
+        for pose in self.arc_points:
+            point = Point()
+            point.x = pose.pose.position.x
+            point.y = pose.pose.position.y
+            point.z = pose.pose.position.z
+            marker.points.append(point)
+        self.marker_pub.publish(marker)
+
 def main(args=None):
     rclpy.init(args=args)
-    node = MoveOnSlidingSphere()
+    node = MoveOnSphereIntersections()
     rclpy.spin(node)
 
 if __name__ == '__main__':
