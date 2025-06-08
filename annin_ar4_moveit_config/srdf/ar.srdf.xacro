@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <robot xmlns:xacro="http://wiki.ros.org/xacro" name="$(arg name)">
-  <xacro:arg name="include_gripper" default="true"/>
+  <xacro:arg name="include_gripper" default="defalt"/>
 
   <xacro:arg name="tf_prefix" default="" />
 
