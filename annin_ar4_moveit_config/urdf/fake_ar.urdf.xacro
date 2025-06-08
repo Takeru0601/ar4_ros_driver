@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://wiki.ros.org/xacro" name="$(arg ar_model)">
   <xacro:include filename="$(find annin_ar4_description)/urdf/ar_macro.xacro"/>
-  <xacro:include filename="$(find annin_ar4_description)/urdf/ar_gripper_macro.xacro"/>
+  //<xacro:include filename="$(find annin_ar4_description)/urdf/ar_gripper_macro.xacro"/>//
   <xacro:include filename="$(find annin_ar4_description)/urdf/ar.ros2_control.xacro"/>
-  <xacro:include filename="$(find annin_ar4_description)/urdf/ar_gripper.ros2_control.xacro"/>
+ // <xacro:include filename="$(find annin_ar4_description)/urdf/ar_gripper.ros2_control.xacro"/>//
 
   <xacro:arg name="tf_prefix" default="" />
 
@@ -30,10 +30,10 @@
     driver_parameters_file="$(find annin_ar4_driver)/config/driver.yaml"
     tf_prefix="$(arg tf_prefix)"
   />
-  <xacro:ar_gripper_ros2_control
+  //<xacro:ar_gripper_ros2_control
     name="ARGripperFakeSystem"
     plugin_name="mock_components/GenericSystem"
     serial_port="/dev/ttyUSB0"
     tf_prefix="$(arg tf_prefix)"
-  />
+  />//
 </robot>
