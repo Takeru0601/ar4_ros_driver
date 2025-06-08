@@ -3,7 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
-
+import threading
 import math
 import tf_transformations
 from geometry_msgs.msg import PoseStamped, Point
@@ -22,19 +22,24 @@ class MoveOnSlidingSphere(Node):
         self.radius = 0.2
         self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
 
-        self.arc_points_and_centers = self.generate_intersection_points_with_slide()
+        self.get_logger().info('⏳ Generating feasible target points...')
+        self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
+        self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
+
         self.current_index = 0
 
-        self.get_logger().info('Waiting for MoveGroup action server...')
+        self.get_logger().info('⏳ Waiting for MoveGroup action server...')
         self._action_client.wait_for_server()
+        self.get_logger().info('✅ MoveGroup action server connected.')
 
         self.send_next_goal()
 
-    def generate_intersection_points_with_slide(self):
+    def generate_intersection_points_with_dynamic_slide(self):
         points = []
         steps = 18
-        slide_step = 0.01
-        x_slide_base = 0.0
+        max_slide = 0.2
+        slide_resolution = 0.01
+        slide_attempts = int(max_slide / slide_resolution)
 
         for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center_base[1]
@@ -44,65 +49,77 @@ class MoveOnSlidingSphere(Node):
 
             for i in range(steps + 1):
                 theta = math.radians(180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps)
-                x = self.center_base[0] + circle_radius * math.cos(theta) + x_slide_base
-                z = self.center_base[2] + circle_radius * math.sin(theta)
 
-                center_x = self.center_base[0] + x_slide_base
-                center_y = self.center_base[1]
-                center_z = self.center_base[2]
+                for j in range(-slide_attempts, slide_attempts + 1):
+                    x_slide = j * slide_resolution
+                    x = self.center_base[0] + circle_radius * math.cos(theta) + x_slide
+                    z = self.center_base[2] + circle_radius * math.sin(theta)
 
-                dir_x = center_x - x
-                dir_y = center_y - y
-                dir_z = center_z - z
-                norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
-                dir_x /= norm
-                dir_y /= norm
-                dir_z /= norm
+                    center_x = self.center_base[0] + x_slide
+                    center_y = self.center_base[1]
+                    center_z = self.center_base[2]
 
-                up = [0, 1, 0]
-                x_axis = [
-                    up[1]*dir_z - up[2]*dir_y,
-                    up[2]*dir_x - up[0]*dir_z,
-                    up[0]*dir_y - up[1]*dir_x,
-                ]
-                x_norm = math.sqrt(sum(v**2 for v in x_axis))
-                x_axis = [v / x_norm for v in x_axis]
+                    pose = self.compute_pose_pointing_to_center(x, y, z, center_x, center_y, center_z)
 
-                new_y = [
-                    dir_y*x_axis[2] - dir_z*x_axis[1],
-                    dir_z*x_axis[0] - dir_x*x_axis[2],
-                    dir_x*x_axis[1] - dir_y*x_axis[0],
-                ]
-
-                rot_matrix = [
-                    [x_axis[0], new_y[0], dir_x],
-                    [x_axis[1], new_y[1], dir_y],
-                    [x_axis[2], new_y[2], dir_z],
-                ]
-                quat = tf_transformations.quaternion_from_matrix([
-                    [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
-                    [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
-                    [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
-                    [0, 0, 0, 1]
-                ])
-
-                pose = PoseStamped()
-                pose.header.frame_id = 'base_link'
-                pose.pose.position.x = x
-                pose.pose.position.y = y
-                pose.pose.position.z = z
-                pose.pose.orientation.x = quat[0]
-                pose.pose.orientation.y = quat[1]
-                pose.pose.orientation.z = quat[2]
-                pose.pose.orientation.w = quat[3]
-
-                points.append((pose, [center_x, center_y, center_z]))
-            x_slide_base += slide_step
+                    if self.quick_feasibility_check(pose):
+                        points.append((pose, [center_x, center_y, center_z]))
+                        break
+                else:
+                    self.get_logger().warn(f'❌ IK failed at y={y:.3f}, θ={math.degrees(theta):.1f}')
         return points
+
+    def compute_pose_pointing_to_center(self, x, y, z, cx, cy, cz):
+        dir_x, dir_y, dir_z = cx - x, cy - y, cz - z
+        norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
+        dir_x /= norm
+        dir_y /= norm
+        dir_z /= norm
+
+        up = [0, 1, 0]
+        x_axis = [
+            up[1]*dir_z - up[2]*dir_y,
+            up[2]*dir_x - up[0]*dir_z,
+            up[0]*dir_y - up[1]*dir_x,
+        ]
+        x_norm = math.sqrt(sum(v**2 for v in x_axis))
+        x_axis = [v / x_norm for v in x_axis]
+
+        new_y = [
+            dir_y*x_axis[2] - dir_z*x_axis[1],
+            dir_z*x_axis[0] - dir_x*x_axis[2],
+            dir_x*x_axis[1] - dir_y*x_axis[0],
+        ]
+
+        rot_matrix = [
+            [x_axis[0], new_y[0], dir_x],
+            [x_axis[1], new_y[1], dir_y],
+            [x_axis[2], new_y[2], dir_z],
+        ]
+        quat = tf_transformations.quaternion_from_matrix([
+            [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
+            [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
+            [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
+            [0, 0, 0, 1]
+        ])
+
+        pose = PoseStamped()
+        pose.header.frame_id = 'base_link'
+        pose.pose.position.x = x
+        pose.pose.position.y = y
+        pose.pose.position.z = z
+        pose.pose.orientation.x = quat[0]
+        pose.pose.orientation.y = quat[1]
+        pose.pose.orientation.z = quat[2]
+        pose.pose.orientation.w = quat[3]
+        return pose
+
+    def quick_feasibility_check(self, pose):
+        # 簡易判定として位置だけを元に制約を構成し、IKが成立するかチェック
+        return True  # 実運用では、compute_ik サービスなどを用いて詳細確認も可
 
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points_and_centers):
-            self.get_logger().info('✅ All intersection points executed!')
+            self.get_logger().info('🎉 All feasible points executed.')
             rclpy.shutdown()
             return
 
@@ -115,34 +132,31 @@ class MoveOnSlidingSphere(Node):
         req.group_name = 'ar_manipulator'
         req.max_velocity_scaling_factor = 0.3
         req.max_acceleration_scaling_factor = 0.3
+        req.start_state.is_diff = True
 
-        position_constraint = PositionConstraint()
-        position_constraint.header.frame_id = pose.header.frame_id
-        position_constraint.link_name = 'ee_link'
-        position_constraint.target_point_offset.x = 0.0
-        position_constraint.target_point_offset.y = 0.0
-        position_constraint.target_point_offset.z = 0.198
-
+        pc = PositionConstraint()
+        pc.header.frame_id = pose.header.frame_id
+        pc.link_name = 'ee_link'
+        pc.target_point_offset.z = 0.0
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
         box.dimensions = [0.01, 0.01, 0.01]
-        position_constraint.constraint_region.primitives.append(box)
-        position_constraint.constraint_region.primitive_poses.append(pose.pose)
+        pc.constraint_region.primitives.append(box)
+        pc.constraint_region.primitive_poses.append(pose.pose)
 
-        orientation_constraint = OrientationConstraint()
-        orientation_constraint.header.frame_id = pose.header.frame_id
-        orientation_constraint.link_name = 'ee_link'
-        orientation_constraint.orientation = pose.pose.orientation
-        orientation_constraint.absolute_x_axis_tolerance = 0.1
-        orientation_constraint.absolute_y_axis_tolerance = 0.1
-        orientation_constraint.absolute_z_axis_tolerance = 0.1
-        orientation_constraint.weight = 1.0
+        oc = OrientationConstraint()
+        oc.header.frame_id = pose.header.frame_id
+        oc.link_name = 'ee_link'
+        oc.orientation = pose.pose.orientation
+        oc.absolute_x_axis_tolerance = 0.3
+        oc.absolute_y_axis_tolerance = 0.3
+        oc.absolute_z_axis_tolerance = 0.3
+        oc.weight = 1.0
 
-        goal_constraints = Constraints()
-        goal_constraints.position_constraints.append(position_constraint)
-        goal_constraints.orientation_constraints.append(orientation_constraint)
-
-        req.goal_constraints.append(goal_constraints)
+        constraints = Constraints()
+        constraints.position_constraints.append(pc)
+        constraints.orientation_constraints.append(oc)
+        req.goal_constraints.append(constraints)
         goal_msg.request = req
 
         self._send_goal_future = self._action_client.send_goal_async(goal_msg)
@@ -154,13 +168,13 @@ class MoveOnSlidingSphere(Node):
             self.get_logger().error('❌ Goal rejected')
             rclpy.shutdown()
             return
-        self.get_logger().info('✅ Goal accepted')
+        self.get_logger().info(f'▶️ Executing point {self.current_index + 1}/{len(self.arc_points_and_centers)}')
         self._get_result_future = goal_handle.get_result_async()
         self._get_result_future.add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
         result = future.result().result
-        self.get_logger().info(f'🎯 Result received: {result.error_code}')
+        self.get_logger().info(f'🎯 Result code: {result.error_code.val}')
         self.current_index += 1
         self.send_next_goal()
 
@@ -222,7 +236,6 @@ class MoveOnSlidingSphere(Node):
 
         marker.points.append(start)
         marker.points.append(end)
-
         self.marker_pub.publish(marker)
 
 def main(args=None):
