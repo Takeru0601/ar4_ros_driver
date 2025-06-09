@@ -9,33 +9,22 @@ from geometry_msgs.msg import PoseStamped, Point
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
 from shape_msgs.msg import SolidPrimitive
-from visualization_msgs.msg import Marker
-from tf2_ros import TransformListener, Buffer
+from visualization_msgs.msg import Marker, MarkerArray
 
 class MoveOnSlidingSphere(Node):
     def __init__(self):
         super().__init__('move_on_sliding_sphere')
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
+        self.traj_pub = self.create_publisher(Marker, '/ee_trajectory_marker', 10)
+        self.center_pub = self.create_publisher(Marker, '/sphere_path_marker', 10)
 
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
-
-        self.center_base = [0.0, -0.45, 0.0]
+        self.center_base = [0.0, -0.45, 0.0]  # 初期球中心（x=0）
         self.radius = 0.2
         self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
 
-        self.trajectory_marker = Marker()
-        self.trajectory_marker.header.frame_id = 'base_link'
-        self.trajectory_marker.ns = 'actual_trajectory'
-        self.trajectory_marker.id = 3000
-        self.trajectory_marker.type = Marker.LINE_STRIP
-        self.trajectory_marker.action = Marker.ADD
-        self.trajectory_marker.scale.x = 0.005
-        self.trajectory_marker.color.r = 1.0
-        self.trajectory_marker.color.g = 0.5
-        self.trajectory_marker.color.b = 0.0
-        self.trajectory_marker.color.a = 1.0
+        self.ee_traj_points = []
+        self.center_path_points = []
 
         self.get_logger().info('⏳ Generating feasible target points...')
         self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
@@ -47,7 +36,6 @@ class MoveOnSlidingSphere(Node):
         self._action_client.wait_for_server()
         self.get_logger().info('✅ MoveGroup action server connected.')
 
-        self.timer = self.create_timer(0.1, self.record_actual_ee_position)
         self.send_next_goal()
 
     def generate_intersection_points_with_dynamic_slide(self):
@@ -68,10 +56,9 @@ class MoveOnSlidingSphere(Node):
 
                 for j in range(-slide_attempts, slide_attempts + 1):
                     x_slide = j * slide_resolution
-                    x = self.center_base[0] + circle_radius * math.cos(theta) + x_slide
-                    z = self.center_base[2] + circle_radius * math.sin(theta)
-
                     center_x = self.center_base[0] + x_slide
+                    x = center_x + circle_radius * math.cos(theta)
+                    z = self.center_base[2] + circle_radius * math.sin(theta)
                     center_y = self.center_base[1]
                     center_z = self.center_base[2]
 
@@ -79,6 +66,7 @@ class MoveOnSlidingSphere(Node):
 
                     if self.quick_feasibility_check(pose):
                         points.append((pose, [center_x, center_y, center_z]))
+                        self.center_path_points.append(Point(x=center_x, y=center_y, z=center_z))
                         break
         return points
 
@@ -133,12 +121,15 @@ class MoveOnSlidingSphere(Node):
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points_and_centers):
             self.get_logger().info('🎉 All feasible points executed.')
+            self.publish_trajectory_marker()
+            self.publish_sphere_path_marker()
             rclpy.shutdown()
             return
 
         pose, center = self.arc_points_and_centers[self.current_index]
         self.publish_center_marker(center)
-        self.publish_ee_z_axis()
+        self.publish_ee_z_axis(pose, self.current_index)
+        self.ee_traj_points.append(pose.pose.position)
 
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
@@ -191,25 +182,12 @@ class MoveOnSlidingSphere(Node):
         self.current_index += 1
         self.send_next_goal()
 
-    def record_actual_ee_position(self):
-        try:
-            trans = self.tf_buffer.lookup_transform('base_link', 'ee_link', rclpy.time.Time())
-            pt = Point()
-            pt.x = trans.transform.translation.x
-            pt.y = trans.transform.translation.y
-            pt.z = trans.transform.translation.z
-            self.trajectory_marker.points.append(pt)
-            self.trajectory_marker.header.stamp = self.get_clock().now().to_msg()
-            self.marker_pub.publish(self.trajectory_marker)
-        except Exception as e:
-            pass
-
     def publish_center_marker(self, center):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'sphere_center'
-        marker.id = self.current_index + 2000
+        marker.id = 1000
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = center[0]
@@ -219,53 +197,82 @@ class MoveOnSlidingSphere(Node):
         marker.scale.y = self.radius * 2
         marker.scale.z = self.radius * 2
         marker.color.r = 1.0
-        marker.color.g = 0.2
-        marker.color.b = 0.2
-        marker.color.a = 0.3  # 半透明
+        marker.color.g = 0.3
+        marker.color.b = 0.3
+        marker.color.a = 0.3
         self.marker_pub.publish(marker)
 
-    def publish_ee_z_axis(self):
-        try:
-            trans = self.tf_buffer.lookup_transform('base_link', 'ee_link', rclpy.time.Time())
-            quat = (
-                trans.transform.rotation.x,
-                trans.transform.rotation.y,
-                trans.transform.rotation.z,
-                trans.transform.rotation.w,
-            )
-            rot_matrix = tf_transformations.quaternion_matrix(quat)
-            z_axis = [rot_matrix[0][2], rot_matrix[1][2], rot_matrix[2][2]]
+    def publish_ee_z_axis(self, pose, id_num):
+        marker = Marker()
+        marker.header.frame_id = 'base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'ee_z_axis'
+        marker.id = id_num
+        marker.type = Marker.ARROW
+        marker.action = Marker.ADD
+        marker.scale.x = 0.01
+        marker.scale.y = 0.015
+        marker.scale.z = 0.1
+        marker.color.r = 0.0
+        marker.color.g = 0.0
+        marker.color.b = 1.0
+        marker.color.a = 1.0
 
-            start = Point()
-            start.x = trans.transform.translation.x
-            start.y = trans.transform.translation.y
-            start.z = trans.transform.translation.z
+        start = Point()
+        start.x = pose.pose.position.x
+        start.y = pose.pose.position.y
+        start.z = pose.pose.position.z
 
-            arrow_length = 0.05
-            end = Point()
-            end.x = start.x + arrow_length * z_axis[0]
-            end.y = start.y + arrow_length * z_axis[1]
-            end.z = start.z + arrow_length * z_axis[2]
+        quat = (
+            pose.pose.orientation.x,
+            pose.pose.orientation.y,
+            pose.pose.orientation.z,
+            pose.pose.orientation.w,
+        )
+        rot_matrix = tf_transformations.quaternion_matrix(quat)
+        z_axis = [rot_matrix[0][2], rot_matrix[1][2], rot_matrix[2][2]]
 
-            marker = Marker()
-            marker.header.frame_id = 'base_link'
-            marker.header.stamp = self.get_clock().now().to_msg()
-            marker.ns = 'ee_z_axis'
-            marker.id = 5000
-            marker.type = Marker.ARROW
-            marker.action = Marker.ADD
-            marker.scale.x = 0.01
-            marker.scale.y = 0.015
-            marker.scale.z = 0.1
-            marker.color.r = 0.0
-            marker.color.g = 0.0
-            marker.color.b = 1.0
-            marker.color.a = 1.0
-            marker.points.append(start)
-            marker.points.append(end)
-            self.marker_pub.publish(marker)
-        except Exception as e:
-            pass
+        arrow_length = 0.05
+        end = Point()
+        end.x = start.x + arrow_length * z_axis[0]
+        end.y = start.y + arrow_length * z_axis[1]
+        end.z = start.z + arrow_length * z_axis[2]
+
+        marker.points.append(start)
+        marker.points.append(end)
+        self.marker_pub.publish(marker)
+
+    def publish_trajectory_marker(self):
+        marker = Marker()
+        marker.header.frame_id = 'base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'ee_trajectory'
+        marker.id = 2000
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        marker.scale.x = 0.005
+        marker.color.r = 0.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0
+        marker.points = self.ee_traj_points
+        self.traj_pub.publish(marker)
+
+    def publish_sphere_path_marker(self):
+        marker = Marker()
+        marker.header.frame_id = 'base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'sphere_path'
+        marker.id = 3000
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        marker.scale.x = 0.005
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 1.0
+        marker.color.a = 1.0
+        marker.points = self.center_path_points
+        self.center_pub.publish(marker)
 
 def main(args=None):
     rclpy.init(args=args)
