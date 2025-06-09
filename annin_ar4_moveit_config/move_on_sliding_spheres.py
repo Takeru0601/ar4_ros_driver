@@ -153,4 +153,91 @@ class MoveOnSlidingSphere(Node):
         oc.header.frame_id = pose.header.frame_id
         oc.link_name = 'ee_link'
         oc.orientation = pose.pose.orientation
-        oc.ab
+        oc.absolute_x_axis_tolerance = 0.3
+        oc.absolute_y_axis_tolerance = 0.3
+        oc.absolute_z_axis_tolerance = 0.3
+        oc.weight = 1.0
+
+        constraints = Constraints()
+        constraints.position_constraints.append(pc)
+        constraints.orientation_constraints.append(oc)
+        req.goal_constraints.append(constraints)
+        goal_msg.request = req
+
+        self._send_goal_future = self._action_client.send_goal_async(goal_msg)
+        self._send_goal_future.add_done_callback(self.goal_response_callback)
+
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error('❌ Goal rejected')
+            rclpy.shutdown()
+            return
+        self.get_logger().info(f'▶️ Executing point {self.current_index + 1}/{len(self.arc_points_and_centers)}')
+        self._get_result_future = goal_handle.get_result_async()
+        self._get_result_future.add_done_callback(self.get_result_callback)
+
+    def get_result_callback(self, future):
+        result = future.result().result
+        self.get_logger().info(f'🎯 Result code: {result.error_code.val}')
+        self.current_index += 1
+        self.send_next_goal()
+
+    def publish_center_marker(self, center):
+        marker = Marker()
+        marker.header.frame_id = 'base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'sphere_center'
+        marker.id = 1000
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = center[0]
+        marker.pose.position.y = center[1]
+        marker.pose.position.z = center[2]
+        marker.scale.x = self.radius * 2
+        marker.scale.y = self.radius * 2
+        marker.scale.z = self.radius * 2
+        marker.color.r = 1.0
+        marker.color.g = 0.3
+        marker.color.b = 0.3
+        marker.color.a = 0.5
+        self.marker_pub.publish(marker)
+
+    def publish_trajectory_markers(self):
+        traj_marker = Marker()
+        traj_marker.header.frame_id = 'base_link'
+        traj_marker.header.stamp = self.get_clock().now().to_msg()
+        traj_marker.ns = 'ee_trajectory'
+        traj_marker.id = 2000
+        traj_marker.type = Marker.LINE_STRIP
+        traj_marker.action = Marker.ADD
+        traj_marker.scale.x = 0.005
+        traj_marker.color.r = 0.0
+        traj_marker.color.g = 1.0
+        traj_marker.color.b = 0.0
+        traj_marker.color.a = 1.0
+        traj_marker.points = self.ee_traj_points
+        self.traj_marker_pub.publish(traj_marker)
+
+        center_marker = Marker()
+        center_marker.header.frame_id = 'base_link'
+        center_marker.header.stamp = self.get_clock().now().to_msg()
+        center_marker.ns = 'sphere_center_traj'
+        center_marker.id = 3000
+        center_marker.type = Marker.LINE_STRIP
+        center_marker.action = Marker.ADD
+        center_marker.scale.x = 0.005
+        center_marker.color.r = 1.0
+        center_marker.color.g = 0.0
+        center_marker.color.b = 1.0
+        center_marker.color.a = 1.0
+        center_marker.points = self.center_traj_points
+        self.center_traj_pub.publish(center_marker)
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = MoveOnSlidingSphere()
+    rclpy.spin(node)
+
+if __name__ == '__main__':
+    main()
