@@ -9,24 +9,20 @@ from geometry_msgs.msg import PoseStamped, Point
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
 from shape_msgs.msg import SolidPrimitive
-from visualization_msgs.msg import Marker, MarkerArray
+from visualization_msgs.msg import Marker
 
 class MoveOnSlidingSphere(Node):
     def __init__(self):
         super().__init__('move_on_sliding_sphere')
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
-        self.traj_marker_pub = self.create_publisher(Marker, '/ee_trajectory_marker', 10)
-        self.center_traj_pub = self.create_publisher(Marker, '/sphere_center_traj_marker', 10)
-        self.tf_buffer = None
-        self.tf_listener = None
 
-        self.center_base = [0.0, -0.45, 0.0]
+        self.center_base = [0.0, -0.45, 0.0]  # 初期中心 x=0
         self.radius = 0.2
         self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
 
-        self.ee_traj_points = []
-        self.center_traj_points = []
+        self.ee_traj = []
+        self.sphere_traj = []
 
         self.get_logger().info('⏳ Generating feasible target points...')
         self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
@@ -58,18 +54,20 @@ class MoveOnSlidingSphere(Node):
 
                 for j in range(-slide_attempts, slide_attempts + 1):
                     x_slide = j * slide_resolution
-                    x = self.center_base[0] + circle_radius * math.cos(theta) + x_slide
-                    z = self.center_base[2] + circle_radius * math.sin(theta)
-
                     center_x = self.center_base[0] + x_slide
                     center_y = self.center_base[1]
                     center_z = self.center_base[2]
+
+                    x = center_x + circle_radius * math.cos(theta)  # 中心から角度で偏位
+                    z = center_z + circle_radius * math.sin(theta)
 
                     pose = self.compute_pose_pointing_to_center(x, y, z, center_x, center_y, center_z)
 
                     if self.quick_feasibility_check(pose):
                         points.append((pose, [center_x, center_y, center_z]))
                         break
+                else:
+                    self.get_logger().warn(f'❌ IK failed at y={y:.3f}, θ={math.degrees(theta):.1f}')
         return points
 
     def compute_pose_pointing_to_center(self, x, y, z, cx, cy, cz):
@@ -122,15 +120,12 @@ class MoveOnSlidingSphere(Node):
 
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points_and_centers):
-            self.publish_trajectory_markers()
             self.get_logger().info('🎉 All feasible points executed.')
             rclpy.shutdown()
             return
 
         pose, center = self.arc_points_and_centers[self.current_index]
-        self.center_traj_points.append(Point(x=center[0], y=center[1], z=center[2]))
-        self.ee_traj_points.append(pose.pose.position)
-        self.publish_center_marker(center)
+        self.publish_center_marker(center, self.current_index)
 
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
@@ -183,12 +178,12 @@ class MoveOnSlidingSphere(Node):
         self.current_index += 1
         self.send_next_goal()
 
-    def publish_center_marker(self, center):
+    def publish_center_marker(self, center, marker_id):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'sphere_center'
-        marker.id = 1000
+        marker.id = marker_id
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = center[0]
@@ -202,37 +197,6 @@ class MoveOnSlidingSphere(Node):
         marker.color.b = 0.3
         marker.color.a = 0.5
         self.marker_pub.publish(marker)
-
-    def publish_trajectory_markers(self):
-        traj_marker = Marker()
-        traj_marker.header.frame_id = 'base_link'
-        traj_marker.header.stamp = self.get_clock().now().to_msg()
-        traj_marker.ns = 'ee_trajectory'
-        traj_marker.id = 2000
-        traj_marker.type = Marker.LINE_STRIP
-        traj_marker.action = Marker.ADD
-        traj_marker.scale.x = 0.005
-        traj_marker.color.r = 0.0
-        traj_marker.color.g = 1.0
-        traj_marker.color.b = 0.0
-        traj_marker.color.a = 1.0
-        traj_marker.points = self.ee_traj_points
-        self.traj_marker_pub.publish(traj_marker)
-
-        center_marker = Marker()
-        center_marker.header.frame_id = 'base_link'
-        center_marker.header.stamp = self.get_clock().now().to_msg()
-        center_marker.ns = 'sphere_center_traj'
-        center_marker.id = 3000
-        center_marker.type = Marker.LINE_STRIP
-        center_marker.action = Marker.ADD
-        center_marker.scale.x = 0.005
-        center_marker.color.r = 1.0
-        center_marker.color.g = 0.0
-        center_marker.color.b = 1.0
-        center_marker.color.a = 1.0
-        center_marker.points = self.center_traj_points
-        self.center_traj_pub.publish(center_marker)
 
 def main(args=None):
     rclpy.init(args=args)
