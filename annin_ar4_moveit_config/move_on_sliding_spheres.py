@@ -3,7 +3,6 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
-import threading
 import math
 import tf_transformations
 from geometry_msgs.msg import PoseStamped, Point
@@ -25,6 +24,8 @@ class MoveOnSlidingSphere(Node):
         self.get_logger().info('⏳ Generating feasible target points...')
         self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
         self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
+
+        self.publish_trajectory_marker()
 
         self.current_index = 0
 
@@ -114,8 +115,28 @@ class MoveOnSlidingSphere(Node):
         return pose
 
     def quick_feasibility_check(self, pose):
-        # 簡易判定として位置だけを元に制約を構成し、IKが成立するかチェック
-        return True  # 実運用では、compute_ik サービスなどを用いて詳細確認も可
+        return True
+
+    def publish_trajectory_marker(self):
+        marker = Marker()
+        marker.header.frame_id = 'base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'trajectory'
+        marker.id = 5000
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        marker.scale.x = 0.003
+        marker.color.r = 0.1
+        marker.color.g = 0.8
+        marker.color.b = 0.2
+        marker.color.a = 1.0
+        for pose, _ in self.arc_points_and_centers:
+            p = Point()
+            p.x = pose.pose.position.x
+            p.y = pose.pose.position.y
+            p.z = pose.pose.position.z
+            marker.points.append(p)
+        self.marker_pub.publish(marker)
 
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points_and_centers):
@@ -123,9 +144,7 @@ class MoveOnSlidingSphere(Node):
             rclpy.shutdown()
             return
 
-        pose, center = self.arc_points_and_centers[self.current_index]
-        self.publish_center_marker(center)
-        self.publish_ee_z_axis(pose, self.current_index)
+        pose, _ = self.arc_points_and_centers[self.current_index]
 
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
@@ -177,66 +196,6 @@ class MoveOnSlidingSphere(Node):
         self.get_logger().info(f'🎯 Result code: {result.error_code.val}')
         self.current_index += 1
         self.send_next_goal()
-
-    def publish_center_marker(self, center):
-        marker = Marker()
-        marker.header.frame_id = 'base_link'
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'sphere_center'
-        marker.id = 1000
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.pose.position.x = center[0]
-        marker.pose.position.y = center[1]
-        marker.pose.position.z = center[2]
-        marker.scale.x = self.radius * 2
-        marker.scale.y = self.radius * 2
-        marker.scale.z = self.radius * 2
-        marker.color.r = 1.0
-        marker.color.g = 0.3
-        marker.color.b = 0.3
-        marker.color.a = 0.5
-        self.marker_pub.publish(marker)
-
-    def publish_ee_z_axis(self, pose, id_num):
-        marker = Marker()
-        marker.header.frame_id = 'base_link'
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'ee_z_axis'
-        marker.id = id_num
-        marker.type = Marker.ARROW
-        marker.action = Marker.ADD
-        marker.scale.x = 0.01
-        marker.scale.y = 0.015
-        marker.scale.z = 0.1
-        marker.color.r = 0.0
-        marker.color.g = 0.0
-        marker.color.b = 1.0
-        marker.color.a = 1.0
-
-        start = Point()
-        start.x = pose.pose.position.x
-        start.y = pose.pose.position.y
-        start.z = pose.pose.position.z
-
-        quat = (
-            pose.pose.orientation.x,
-            pose.pose.orientation.y,
-            pose.pose.orientation.z,
-            pose.pose.orientation.w,
-        )
-        rot_matrix = tf_transformations.quaternion_matrix(quat)
-        z_axis = [rot_matrix[0][2], rot_matrix[1][2], rot_matrix[2][2]]
-
-        arrow_length = 0.05
-        end = Point()
-        end.x = start.x + arrow_length * z_axis[0]
-        end.y = start.y + arrow_length * z_axis[1]
-        end.z = start.z + arrow_length * z_axis[2]
-
-        marker.points.append(start)
-        marker.points.append(end)
-        self.marker_pub.publish(marker)
 
 def main(args=None):
     rclpy.init(args=args)
