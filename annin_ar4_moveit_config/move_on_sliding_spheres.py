@@ -18,10 +18,13 @@ class MoveOnSlidingSphere(Node):
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
-        self.center_base = [0.0, -0.45, 0.0]
+        self.center_base_x = 0.0  # ✅ 前回のスライド中心を保存（初期x=0.0）
+        self.center_base_y = -0.45
+        self.center_base_z = 0.0
         self.radius = 0.2
         self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
         self.ee_traj = []
+        self.sphere_traj = []
 
         self.get_logger().info('⏳ Generating feasible target points...')
         self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
@@ -41,7 +44,7 @@ class MoveOnSlidingSphere(Node):
         slide_attempts = int(max_slide / slide_resolution)
 
         for plane_idx, y in enumerate(self.y_planes):
-            dy = y - self.center_base[1]
+            dy = y - self.center_base_y
             if abs(dy) > self.radius:
                 continue
             circle_radius = math.sqrt(self.radius**2 - dy**2)
@@ -50,17 +53,17 @@ class MoveOnSlidingSphere(Node):
                 theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
                 theta = math.radians(theta_deg)
 
-                # スライド方向をθに応じて切り替え
+                # θに応じたスライド方向の切り替え
                 if theta_deg < 90.0:
-                    slide_range = range(-slide_attempts, slide_attempts + 1)  # 右側：−x優先
+                    slide_range = range(-slide_attempts, slide_attempts + 1)
                 else:
-                    slide_range = range(slide_attempts, -slide_attempts - 1, -1)  # 左側：＋x優先
+                    slide_range = range(slide_attempts, -slide_attempts - 1, -1)
 
                 for j in slide_range:
                     x_slide = j * slide_resolution
-                    center_x = self.center_base[0] + x_slide
-                    center_y = self.center_base[1]
-                    center_z = self.center_base[2]
+                    center_x = self.center_base_x + x_slide  # ✅ 起点を更新可能な中心xに変更
+                    center_y = self.center_base_y
+                    center_z = self.center_base_z
 
                     x = center_x + circle_radius * math.cos(theta)
                     z = center_z + circle_radius * math.sin(theta)
@@ -69,8 +72,9 @@ class MoveOnSlidingSphere(Node):
 
                     if self.quick_feasibility_check(pose):
                         points.append((pose, [center_x, center_y, center_z]))
+                        self.center_base_x = center_x  # ✅ 成功した中心xを次の起点に保存
                         self.get_logger().info(
-                            f'✅ IK success: y={y:.3f}, θ={theta_deg:5.1f}°, x_slide={x_slide:+.3f} m'
+                            f'✅ IK success: y={y:.3f}, θ={theta_deg:5.1f}°, x_slide={x_slide:+.3f} m (base_x={self.center_base_x:+.3f})'
                         )
                         break
                 else:
@@ -129,17 +133,14 @@ class MoveOnSlidingSphere(Node):
         if self.current_index >= len(self.arc_points_and_centers):
             self.get_logger().info('🎉 All feasible points executed.')
             self.publish_trajectory_line()
+            self.publish_sphere_trajectory_line()
             rclpy.shutdown()
             return
 
         pose, center = self.arc_points_and_centers[self.current_index]
-        self.publish_center_marker(center, self.current_index)
         self.publish_sphere_marker(center, self.current_index)
-        self.ee_traj.append(Point(
-            x=pose.pose.position.x,
-            y=pose.pose.position.y,
-            z=pose.pose.position.z
-        ))
+        self.ee_traj.append(Point(x=pose.pose.position.x, y=pose.pose.position.y, z=pose.pose.position.z))
+        self.sphere_traj.append(Point(x=center[0], y=center[1], z=center[2]))
 
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
@@ -192,11 +193,11 @@ class MoveOnSlidingSphere(Node):
         self.current_index += 1
         self.send_next_goal()
 
-    def publish_center_marker(self, center, marker_id):
+    def publish_sphere_marker(self, center, marker_id):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'sphere_center'
+        marker.ns = 'sliding_sphere'
         marker.id = marker_id
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
@@ -212,15 +213,12 @@ class MoveOnSlidingSphere(Node):
         marker.color.a = 0.2
         self.marker_pub.publish(marker)
 
-    def publish_sphere_marker(self, center, marker_id):
-        self.publish_center_marker(center, 1000 + marker_id)
-
     def publish_trajectory_line(self):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'ee_trajectory'
-        marker.id = 5000
+        marker.id = 9999
         marker.type = Marker.LINE_STRIP
         marker.action = Marker.ADD
         marker.points = self.ee_traj
@@ -228,6 +226,22 @@ class MoveOnSlidingSphere(Node):
         marker.color.r = 0.0
         marker.color.g = 1.0
         marker.color.b = 0.0
+        marker.color.a = 1.0
+        self.marker_pub.publish(marker)
+
+    def publish_sphere_trajectory_line(self):
+        marker = Marker()
+        marker.header.frame_id = 'base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'sphere_trajectory'
+        marker.id = 8888
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        marker.points = self.sphere_traj
+        marker.scale.x = 0.005
+        marker.color.r = 0.0
+        marker.color.g = 0.0
+        marker.color.b = 1.0
         marker.color.a = 1.0
         self.marker_pub.publish(marker)
 
