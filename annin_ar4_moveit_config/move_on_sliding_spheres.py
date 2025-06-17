@@ -11,82 +11,79 @@ from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, 
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker
 
+
 class MoveOnSlidingSphere(Node):
     def __init__(self):
         super().__init__('move_on_sliding_sphere')
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
-        # 初期設定
-        self.center_base = [0.0, -0.45, 0.0]  # 初期中心 x=0
-        self.radius = 0.2  # 半径 0.2m
-        self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]  # Y軸に沿った平面
-
-        # 目標点と中心点
+        self.center_base = [0.0, -0.45, 0.0]
+        self.radius = 0.2
+        self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
         self.ee_traj = []
-        self.sphere_traj = []
 
-        # 計算された交差点と中心を取得
         self.get_logger().info('⏳ Generating feasible target points...')
         self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
         self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
 
         self.current_index = 0
-
-        # MoveGroupアクションサーバーを待機
         self.get_logger().info('⏳ Waiting for MoveGroup action server...')
         self._action_client.wait_for_server()
         self.get_logger().info('✅ MoveGroup action server connected.')
-
         self.send_next_goal()
 
     def generate_intersection_points_with_dynamic_slide(self):
         points = []
-        steps = 18  # 角度を18等分
-        max_slide = 0.2  # 最大スライド量
-        slide_resolution = 0.01  # スライド解像度
+        steps = 18
+        max_slide = 0.2
+        slide_resolution = 0.01
         slide_attempts = int(max_slide / slide_resolution)
 
-        # 各Y平面に対して交差点を計算
         for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center_base[1]
             if abs(dy) > self.radius:
                 continue
             circle_radius = math.sqrt(self.radius**2 - dy**2)
 
-            # 各角度で点を計算
             for i in range(steps + 1):
-                theta = math.radians(180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps)
+                theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
+                theta = math.radians(theta_deg)
 
-                for j in range(-slide_attempts, slide_attempts + 1):
+                # スライド方向をθに応じて切り替え
+                if theta_deg < 90.0:
+                    slide_range = range(-slide_attempts, slide_attempts + 1)  # 右側：−x優先
+                else:
+                    slide_range = range(slide_attempts, -slide_attempts - 1, -1)  # 左側：＋x優先
+
+                for j in slide_range:
                     x_slide = j * slide_resolution
                     center_x = self.center_base[0] + x_slide
                     center_y = self.center_base[1]
                     center_z = self.center_base[2]
 
-                    # 角度に基づいて位置を計算
                     x = center_x + circle_radius * math.cos(theta)
                     z = center_z + circle_radius * math.sin(theta)
 
-                    # 中心点を向く姿勢を計算
                     pose = self.compute_pose_pointing_to_center(x, y, z, center_x, center_y, center_z)
 
                     if self.quick_feasibility_check(pose):
                         points.append((pose, [center_x, center_y, center_z]))
+                        self.get_logger().info(
+                            f'✅ IK success: y={y:.3f}, θ={theta_deg:5.1f}°, x_slide={x_slide:+.3f} m'
+                        )
                         break
                 else:
-                    self.get_logger().warn(f'❌ IK failed at y={y:.3f}, θ={math.degrees(theta):.1f}')
+                    self.get_logger().warn(f'❌ IK failed at y={y:.3f}, θ={theta_deg:.1f}')
         return points
 
     def compute_pose_pointing_to_center(self, x, y, z, cx, cy, cz):
-        # 中心を向く方向の計算
         dir_x, dir_y, dir_z = cx - x, cy - y, cz - z
         norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
         dir_x /= norm
         dir_y /= norm
         dir_z /= norm
 
-        # X軸の方向を計算
         up = [0, 1, 0]
         x_axis = [
             up[1]*dir_z - up[2]*dir_y,
@@ -96,27 +93,24 @@ class MoveOnSlidingSphere(Node):
         x_norm = math.sqrt(sum(v**2 for v in x_axis))
         x_axis = [v / x_norm for v in x_axis]
 
-        # 新しいY軸を計算
         new_y = [
             dir_y*x_axis[2] - dir_z*x_axis[1],
             dir_z*x_axis[0] - dir_x*x_axis[2],
             dir_x*x_axis[1] - dir_y*x_axis[0],
         ]
 
-        # 回転行列を作成
         rot_matrix = [
             [x_axis[0], new_y[0], dir_x],
             [x_axis[1], new_y[1], dir_y],
             [x_axis[2], new_y[2], dir_z],
         ]
-        quat = tf_transformations.quaternion_from_matrix([  # 回転行列をクォータニオンに変換
+        quat = tf_transformations.quaternion_from_matrix([
             [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
             [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
             [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
             [0, 0, 0, 1]
         ])
 
-        # 姿勢を生成
         pose = PoseStamped()
         pose.header.frame_id = 'base_link'
         pose.pose.position.x = x
@@ -129,22 +123,27 @@ class MoveOnSlidingSphere(Node):
         return pose
 
     def quick_feasibility_check(self, pose):
-        # クイックな可行性チェック（ここでは常にTrueとしている）
         return True
 
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points_and_centers):
             self.get_logger().info('🎉 All feasible points executed.')
+            self.publish_trajectory_line()
             rclpy.shutdown()
             return
 
         pose, center = self.arc_points_and_centers[self.current_index]
         self.publish_center_marker(center, self.current_index)
+        self.publish_sphere_marker(center, self.current_index)
+        self.ee_traj.append(Point(
+            x=pose.pose.position.x,
+            y=pose.pose.position.y,
+            z=pose.pose.position.z
+        ))
 
-        # MoveGroupへ目標メッセージを送信
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
-        req.group_name = 'ar_manipulator'  # グループ名設定
+        req.group_name = 'ar_manipulator'
         req.max_velocity_scaling_factor = 0.3
         req.max_acceleration_scaling_factor = 0.3
         req.start_state.is_diff = True
@@ -207,11 +206,31 @@ class MoveOnSlidingSphere(Node):
         marker.scale.x = self.radius * 2
         marker.scale.y = self.radius * 2
         marker.scale.z = self.radius * 2
-        marker.color.r = 1.0
+        marker.color.r = 0.3
         marker.color.g = 0.3
-        marker.color.b = 0.3
-        marker.color.a = 0.5
+        marker.color.b = 1.0
+        marker.color.a = 0.2
         self.marker_pub.publish(marker)
+
+    def publish_sphere_marker(self, center, marker_id):
+        self.publish_center_marker(center, 1000 + marker_id)
+
+    def publish_trajectory_line(self):
+        marker = Marker()
+        marker.header.frame_id = 'base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'ee_trajectory'
+        marker.id = 5000
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        marker.points = self.ee_traj
+        marker.scale.x = 0.005
+        marker.color.r = 0.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0
+        self.marker_pub.publish(marker)
+
 
 def main(args=None):
     rclpy.init(args=args)
