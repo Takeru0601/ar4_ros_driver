@@ -18,9 +18,7 @@ class MoveOnSlidingSphere(Node):
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
 
-        self.center_base_x = 0.0  # ✅ 前回のスライド中心を保存（初期x=0.0）
-        self.center_base_y = -0.45
-        self.center_base_z = 0.0
+        self.center_base = [0.0, -0.45, 0.0]
         self.radius = 0.2
         self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
         self.ee_traj = []
@@ -44,7 +42,7 @@ class MoveOnSlidingSphere(Node):
         slide_attempts = int(max_slide / slide_resolution)
 
         for plane_idx, y in enumerate(self.y_planes):
-            dy = y - self.center_base_y
+            dy = y - self.center_base[1]
             if abs(dy) > self.radius:
                 continue
             circle_radius = math.sqrt(self.radius**2 - dy**2)
@@ -53,7 +51,6 @@ class MoveOnSlidingSphere(Node):
                 theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
                 theta = math.radians(theta_deg)
 
-                # θに応じたスライド方向の切り替え
                 if theta_deg < 90.0:
                     slide_range = range(-slide_attempts, slide_attempts + 1)
                 else:
@@ -61,9 +58,9 @@ class MoveOnSlidingSphere(Node):
 
                 for j in slide_range:
                     x_slide = j * slide_resolution
-                    center_x = self.center_base_x + x_slide  # ✅ 起点を更新可能な中心xに変更
-                    center_y = self.center_base_y
-                    center_z = self.center_base_z
+                    center_x = self.center_base[0] + x_slide
+                    center_y = self.center_base[1]
+                    center_z = self.center_base[2]
 
                     x = center_x + circle_radius * math.cos(theta)
                     z = center_z + circle_radius * math.sin(theta)
@@ -72,9 +69,8 @@ class MoveOnSlidingSphere(Node):
 
                     if self.quick_feasibility_check(pose):
                         points.append((pose, [center_x, center_y, center_z]))
-                        self.center_base_x = center_x  # ✅ 成功した中心xを次の起点に保存
                         self.get_logger().info(
-                            f'✅ IK success: y={y:.3f}, θ={theta_deg:5.1f}°, x_slide={x_slide:+.3f} m (base_x={self.center_base_x:+.3f})'
+                            f'✅ IK success: y={y:.3f}, θ={theta_deg:5.1f}°, x_slide={x_slide:+.3f} m'
                         )
                         break
                 else:
@@ -139,8 +135,16 @@ class MoveOnSlidingSphere(Node):
 
         pose, center = self.arc_points_and_centers[self.current_index]
         self.publish_sphere_marker(center, self.current_index)
-        self.ee_traj.append(Point(x=pose.pose.position.x, y=pose.pose.position.y, z=pose.pose.position.z))
-        self.sphere_traj.append(Point(x=center[0], y=center[1], z=center[2]))
+        self.ee_traj.append(Point(
+            x=pose.pose.position.x,
+            y=pose.pose.position.y,
+            z=pose.pose.position.z
+        ))
+        self.sphere_traj.append(Point(
+            x=center[0],
+            y=center[1],
+            z=center[2]
+        ))
 
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
