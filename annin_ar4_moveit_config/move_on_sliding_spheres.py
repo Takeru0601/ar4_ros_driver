@@ -35,7 +35,7 @@ class MoveOnSlidingSphere(Node):
             self.get_logger().info('Waiting for /compute_ik service...')
 
         self.get_logger().info('⏳ Generating feasible target points...')
-        self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
+        self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()  # NOTE: Feasibility check will stamp header inside
         self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
 
         self.current_index = 0
@@ -44,70 +44,52 @@ class MoveOnSlidingSphere(Node):
         self.get_logger().info('✅ MoveGroup action server connected.')
         self.send_next_goal()
 
-    def quick_feasibility_check(self, pose: PoseStamped) -> bool:
-        request = GetPositionIK.Request()
-        request.ik_request.group_name = 'ar_manipulator'
-        request.ik_request.pose_stamped = pose
-        request.ik_request.ik_link_name = 'ee_link'
-        request.ik_request.timeout.sec = 1
-        request.ik_request.avoid_collisions = True
-        request.ik_request.robot_state.is_diff = True
+    def compute_pose_pointing_to_center(self, x, y, z, cx, cy, cz):
+        # NOTE: PoseStamped will be stamped in quick_feasibility_check
+        dir_x, dir_y, dir_z = cx - x, cy - y, cz - z
+        norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
+        dir_x /= norm
+        dir_y /= norm
+        dir_z /= norm
 
-        future = self.ik_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
+        up = [0, 1, 0]
+        x_axis = [
+            up[1]*dir_z - up[2]*dir_y,
+            up[2]*dir_x - up[0]*dir_z,
+            up[0]*dir_y - up[1]*dir_x,
+        ]
+        x_norm = math.sqrt(sum(v**2 for v in x_axis))
+        x_axis = [v / x_norm for v in x_axis]
 
-        if future.result() is not None:
-            result = future.result()
-            return result.error_code.val == result.error_code.SUCCESS
-        else:
-            self.get_logger().warn('No response from /compute_ik')
-            return False
+        new_y = [
+            dir_y*x_axis[2] - dir_z*x_axis[1],
+            dir_z*x_axis[0] - dir_x*x_axis[2],
+            dir_x*x_axis[1] - dir_y*x_axis[0],
+        ]
 
-    def generate_intersection_points_with_dynamic_slide(self):
-        points = []
-        steps = 18
-        max_slide = 0.2
-        slide_resolution = 0.01
-        slide_attempts = int(max_slide / slide_resolution)
+        rot_matrix = [
+            [x_axis[0], new_y[0], dir_x],
+            [x_axis[1], new_y[1], dir_y],
+            [x_axis[2], new_y[2], dir_z],
+        ]
+        quat = tf_transformations.quaternion_from_matrix([
+            [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
+            [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
+            [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
+            [0, 0, 0, 1]
+        ])
 
-        for plane_idx, y in enumerate(self.y_planes):
-            dy = y - self.center_base_y
-            if abs(dy) > self.radius:
-                continue
-            circle_radius = math.sqrt(self.radius**2 - dy**2)
-
-            for i in range(steps + 1):
-                theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
-                theta = math.radians(theta_deg)
-
-                if theta_deg < 90.0:
-                    slide_range = range(-slide_attempts, slide_attempts + 1)
-                else:
-                    slide_range = range(slide_attempts, -slide_attempts - 1, -1)
-
-                for j in slide_range:
-                    x_slide = j * slide_resolution
-                    center_x = self.center_base_x + x_slide
-                    center_y = self.center_base_y
-                    center_z = self.center_base_z
-
-                    x = center_x + circle_radius * math.cos(theta)
-                    z = center_z + circle_radius * math.sin(theta)
-
-                    pose = self.compute_pose_pointing_to_center(x, y, z, center_x, center_y, center_z)
-
-                    if self.quick_feasibility_check(pose):
-                        points.append((pose, [center_x, center_y, center_z]))
-                        self.ee_traj.append((x, y, z))
-                        self.sphere_traj.append((center_x, center_y, center_z))
-                        self.center_base_x = center_x
-                        self.get_logger().info(
-                            f'✅ IK success: y={y:.3f}, θ={theta_deg:5.1f}°, x_slide={x_slide:+.3f} m'
-                        )
-                        break
-                else:
-                    self.get_logger().warn(f'❌ IK failed at y={y:.3f}, θ={theta_deg:.1f}')
-        return points
+        pose = PoseStamped()
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.header.frame_id = 'base_link'
+        pose.pose.position.x = x
+        pose.pose.position.y = y
+        pose.pose.position.z = z
+        pose.pose.orientation.x = quat[0]
+        pose.pose.orientation.y = quat[1]
+        pose.pose.orientation.z = quat[2]
+        pose.pose.orientation.w = quat[3]
+        return pose
 
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points_and_centers):
@@ -117,6 +99,8 @@ class MoveOnSlidingSphere(Node):
             return
 
         pose, center = self.arc_points_and_centers[self.current_index]
+        self.ee_traj.append(pose.pose.position)
+        self.sphere_traj.append(center)
         self.publish_sphere_marker(center, self.current_index)
 
         goal_msg = MoveGroup.Goal()
@@ -184,53 +168,43 @@ class MoveOnSlidingSphere(Node):
         marker.scale.x = self.radius * 2
         marker.scale.y = self.radius * 2
         marker.scale.z = self.radius * 2
-        marker.color.r = 0.3
-        marker.color.g = 0.3
+        marker.color.r = 0.2
+        marker.color.g = 0.5
         marker.color.b = 1.0
         marker.color.a = 0.4
         self.marker_pub.publish(marker)
 
     def publish_trajectories(self):
+        if not self.ee_traj or not self.sphere_traj:
+            self.get_logger().warn("❗ Trajectories are empty.")
+            return
         marker_array = MarkerArray()
 
-        line_marker = Marker()
-        line_marker.header.frame_id = 'base_link'
-        line_marker.header.stamp = self.get_clock().now().to_msg()
-        line_marker.ns = 'ee_traj'
-        line_marker.id = 0
-        line_marker.type = Marker.LINE_STRIP
-        line_marker.action = Marker.ADD
-        line_marker.scale.x = 0.005
-        line_marker.color.r = 0.0
-        line_marker.color.g = 1.0
-        line_marker.color.b = 0.0
-        line_marker.color.a = 1.0
-        for pt in self.ee_traj:
-            p = Point()
-            p.x, p.y, p.z = pt
-            line_marker.points.append(p)
-        marker_array.markers.append(line_marker)
+        ee_line = Marker()
+        ee_line.header.frame_id = 'base_link'
+        ee_line.ns = 'ee_trajectory'
+        ee_line.id = 0
+        ee_line.type = Marker.LINE_STRIP
+        ee_line.action = Marker.ADD
+        ee_line.scale.x = 0.005
+        ee_line.color.g = 1.0
+        ee_line.color.a = 1.0
+        ee_line.points = [Point(x=p.x, y=p.y, z=p.z) for p in self.ee_traj]
 
         sphere_line = Marker()
         sphere_line.header.frame_id = 'base_link'
-        sphere_line.header.stamp = self.get_clock().now().to_msg()
-        sphere_line.ns = 'sphere_traj'
+        sphere_line.ns = 'sphere_trajectory'
         sphere_line.id = 1
         sphere_line.type = Marker.LINE_STRIP
         sphere_line.action = Marker.ADD
-        sphere_line.scale.x = 0.005
-        sphere_line.color.r = 0.0
-        sphere_line.color.g = 0.0
+        sphere_line.scale.x = 0.003
         sphere_line.color.b = 1.0
         sphere_line.color.a = 1.0
-        for pt in self.sphere_traj:
-            p = Point()
-            p.x, p.y, p.z = pt
-            sphere_line.points.append(p)
+        sphere_line.points = [Point(x=p[0], y=p[1], z=p[2]) for p in self.sphere_traj]
+
+        marker_array.markers.append(ee_line)
         marker_array.markers.append(sphere_line)
-
         self.marker_array_pub.publish(marker_array)
-
 
 def main(args=None):
     rclpy.init(args=args)
