@@ -34,10 +34,10 @@ class MoveOnSlidingSphere(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.center_base_x = 0.0
-        self.center_base_y = -0.45
+        self.center_base_y = -0.40
         self.center_base_z = 0.0
-        self.radius = 0.2
-        self.y_planes = [-0.45, -0.43, -0.41]
+        self.radius = 0.3
+        self.y_planes = [-0.40, -0.38, -0.36]
         self.ee_traj = []
 
         self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
