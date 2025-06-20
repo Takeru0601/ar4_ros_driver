@@ -39,7 +39,6 @@ class MoveOnSlidingSphere(Node):
         self.radius = 0.2
         self.y_planes = [-0.45, -0.43, -0.41]
         self.ee_traj = []
-        self.sphere_traj = []
 
         self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
         while not self.ik_client.wait_for_service(timeout_sec=1.0):
@@ -73,7 +72,7 @@ class MoveOnSlidingSphere(Node):
                 theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
                 theta = math.radians(theta_deg)
 
-                slide_bias = max_slide * math.cos(theta)
+                slide_bias = -max_slide * math.cos(theta)  # 軽く反対方向に変更
                 cx = self.center_base_x + slide_bias
                 cy = self.center_base_y
                 cz = self.center_base_z
@@ -155,8 +154,7 @@ class MoveOnSlidingSphere(Node):
             return
 
         pose, center = self.arc_points_and_centers[self.current_index]
-        self.sphere_traj.append(center)
-        self.publish_sphere_marker(center, self.current_index)
+        self.publish_sphere_marker(center)
 
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
@@ -205,7 +203,7 @@ class MoveOnSlidingSphere(Node):
 
     def get_result_callback(self, future):
         result = future.result().result
-        self.get_logger().info(f'🎯 Result code: {result.error_code.val}')
+        self.get_logger().info(f'🌟 Result code: {result.error_code.val}')
         self.current_index += 1
         self.send_next_goal()
 
@@ -220,12 +218,12 @@ class MoveOnSlidingSphere(Node):
         except Exception as e:
             self.get_logger().warn(f'⚠️ TF lookup failed: {e}')
 
-    def publish_sphere_marker(self, center, marker_id):
+    def publish_sphere_marker(self, center):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'sphere_center'
-        marker.id = marker_id
+        marker.id = 999  # IDを固定して上書きする
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = center[0]
@@ -254,19 +252,7 @@ class MoveOnSlidingSphere(Node):
         ee_line.color.a = 1.0
         ee_line.points = self.ee_traj
 
-        sphere_line = Marker()
-        sphere_line.header.frame_id = 'base_link'
-        sphere_line.ns = 'sphere_trajectory'
-        sphere_line.id = 1
-        sphere_line.type = Marker.LINE_STRIP
-        sphere_line.action = Marker.ADD
-        sphere_line.scale.x = 0.003
-        sphere_line.color.b = 1.0
-        sphere_line.color.a = 1.0
-        sphere_line.points = [Point(x=p[0], y=p[1], z=p[2]) for p in self.sphere_traj]
-
         marker_array.markers.append(ee_line)
-        marker_array.markers.append(sphere_line)
         self.marker_array_pub.publish(marker_array)
 
 def main(args=None):
