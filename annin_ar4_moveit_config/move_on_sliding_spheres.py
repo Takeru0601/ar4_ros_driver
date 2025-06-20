@@ -148,7 +148,6 @@ class MoveOnSlidingSphere(Node):
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points_and_centers):
             self.get_logger().info('🎉 All feasible points executed.')
-            self.publish_trajectories()
             rclpy.shutdown()
             return
 
@@ -156,6 +155,7 @@ class MoveOnSlidingSphere(Node):
         self.ee_traj.append(pose.pose.position)
         self.sphere_traj.append(center)
         self.publish_sphere_marker(center, self.current_index)
+        self.publish_trajectories()  # <== 軌跡をリアルタイムで描画
 
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
