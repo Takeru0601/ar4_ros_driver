@@ -15,9 +15,8 @@ from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker, MarkerArray
 
 from tf2_ros import TransformListener, Buffer
-from builtin_interfaces.msg import Duration
-import tf2_ros
-
+from rclpy.duration import Duration
+from rclpy.time import Time
 
 class MoveOnSlidingSphere(Node):
     def __init__(self):
@@ -79,10 +78,7 @@ class MoveOnSlidingSphere(Node):
                 theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
                 theta = math.radians(theta_deg)
 
-                if 0 <= theta_deg < 90:
-                    slide_range = range(-slide_attempts, 1)
-                else:
-                    slide_range = range(0, slide_attempts + 1)
+                slide_range = range(-slide_attempts, 1) if 0 <= theta_deg < 90 else range(0, slide_attempts + 1)
 
                 for j in slide_range:
                     x_slide = j * slide_resolution
@@ -159,9 +155,7 @@ class MoveOnSlidingSphere(Node):
         future = self.ik_client.call_async(request)
         rclpy.spin_until_future_complete(self, future)
 
-        if future.result() and future.result().error_code.val == 1:
-            return True
-        return False
+        return future.result() and future.result().error_code.val == 1
 
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points_and_centers):
@@ -222,11 +216,9 @@ class MoveOnSlidingSphere(Node):
         result = future.result().result
         self.get_logger().info(f'🎯 Result code: {result.error_code.val}')
 
-        # EE の通過点を TF から取得して記録
         try:
             trans = self.tf_buffer.lookup_transform(
-                'base_link', 'ee_link', rclpy.time.Time(),
-                timeout=Duration(sec=1))
+                'base_link', 'ee_link', Time(), timeout=Duration(seconds=1).to_msg())
             pos = trans.transform.translation
             point = Point(x=pos.x, y=pos.y, z=pos.z)
             self.ee_traj.append(point)
@@ -288,7 +280,6 @@ class MoveOnSlidingSphere(Node):
         marker_array.markers.append(ee_line)
         marker_array.markers.append(sphere_line)
         self.marker_array_pub.publish(marker_array)
-
 
 def main(args=None):
     rclpy.init(args=args)
