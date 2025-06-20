@@ -2,53 +2,45 @@
 
 import rclpy
 from rclpy.node import Node
-from rclpy.action import ActionClient
-import math
-import tf_transformations
-
-from geometry_msgs.msg import PoseStamped, Point
-from sensor_msgs.msg import JointState
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from moveit_msgs.srv import GetPositionIK, GetCartesianPath
-from shape_msgs.msg import SolidPrimitive
-from visualization_msgs.msg import Marker, MarkerArray
-
-from tf2_ros import TransformListener, Buffer
 from rclpy.duration import Duration
 from rclpy.time import Time
+from geometry_msgs.msg import PoseStamped, Point, Pose
+from sensor_msgs.msg import JointState
+from shape_msgs.msg import SolidPrimitive
+from visualization_msgs.msg import Marker, MarkerArray
+from moveit_msgs.srv import GetPositionIK, GetCartesianPath
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from std_msgs.msg import Header
+import tf_transformations
+import math
+from tf2_ros import TransformListener, Buffer
 
 class MoveOnSlidingSphere(Node):
     def __init__(self):
         super().__init__('move_on_sliding_sphere')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
         self.marker_array_pub = self.create_publisher(MarkerArray, '/visualization_marker_array', 10)
-
+        self.joint_state_sub = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
+        self.joint_trajectory_pub = self.create_publisher(JointTrajectory, '/follow_joint_trajectory', 10)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         self.timer = self.create_timer(0.2, self.update_ee_marker)
 
         self.current_joint_state = JointState()
-        self.joint_state_sub = self.create_subscription(
-            JointState,
-            '/joint_states',
-            self.joint_state_callback,
-            10
-        )
-
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.ee_traj = []
+        self.sphere_traj = []
 
         self.center_base_x = 0.0
         self.center_base_y = -0.45
         self.center_base_z = 0.0
         self.radius = 0.2
         self.y_planes = [-0.45, -0.43, -0.41]
-        self.ee_traj = []
-        self.sphere_traj = []
 
         self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
-        self.cartesian_client = self.create_client(GetCartesianPath, '/compute_cartesian_path')
-
         while not self.ik_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for /compute_ik service...')
+
+        self.cartesian_client = self.create_client(GetCartesianPath, '/compute_cartesian_path')
         while not self.cartesian_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for /compute_cartesian_path service...')
 
@@ -56,8 +48,7 @@ class MoveOnSlidingSphere(Node):
         self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
         self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
 
-        self.get_logger().info('⏳ Planning Cartesian Path...')
-        self.send_cartesian_path()
+        self.plan_and_execute_cartesian_path()
 
     def joint_state_callback(self, msg):
         self.current_joint_state = msg
@@ -78,7 +69,6 @@ class MoveOnSlidingSphere(Node):
             for i in range(steps + 1):
                 theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
                 theta = math.radians(theta_deg)
-
                 slide_range = range(-slide_attempts, 1) if 0 <= theta_deg < 90 else range(0, slide_attempts + 1)
 
                 for j in slide_range:
@@ -135,7 +125,6 @@ class MoveOnSlidingSphere(Node):
         ])
 
         pose = PoseStamped()
-        pose.header.stamp = self.get_clock().now().to_msg()
         pose.header.frame_id = 'base_link'
         pose.pose.position.x = x
         pose.pose.position.y = y
@@ -158,37 +147,28 @@ class MoveOnSlidingSphere(Node):
 
         return future.result() and future.result().error_code.val == 1
 
-    def send_cartesian_path(self):
-        from moveit_msgs.srv import GetCartesianPath
+    def plan_and_execute_cartesian_path(self):
+        self.get_logger().info('⏳ Planning Cartesian Path...')
 
-        req = GetCartesianPath.Request()
-        req.group_name = 'ar_manipulator'
-        req.link_name = 'ee_link'
-        req.header.frame_id = 'base_link'
-        req.start_state.joint_state = self.current_joint_state
-        req.jump_threshold = 0.0
-        req.max_step = 0.01
-        req.avoid_collisions = True
-        req.waypoints = [pose for pose, _ in self.arc_points_and_centers]
+        request = GetCartesianPath.Request()
+        request.header.frame_id = 'base_link'
+        request.group_name = 'ar_manipulator'
+        request.ik_link_name = 'ee_link'
+        request.max_step = 0.01
+        request.jump_threshold = 0.0
+        request.start_state.joint_state = self.current_joint_state
+        request.waypoints = [pose.pose for pose, _ in self.arc_points_and_centers]
 
-        future = self.cartesian_client.call_async(req)
+        future = self.cartesian_client.call_async(request)
         rclpy.spin_until_future_complete(self, future)
 
-        if not future.result():
-            self.get_logger().error('❌ Cartesian path planning failed.')
+        if future.result().error_code.val != 1:
+            self.get_logger().error(f'❌ Cartesian path planning failed. Error code: {future.result().error_code.val}')
             return
 
-        fraction = future.result().fraction
-        if fraction < 1.0:
-            self.get_logger().warn(f'⚠️ Cartesian path only {fraction*100:.1f}% achieved.')
-        else:
-            self.get_logger().info(f'✅ Cartesian path successfully planned.')
-
-        traj = future.result().solution.joint_trajectory
-
-        pub = self.create_publisher(JointTrajectory, '/follow_joint_trajectory', 10)
-        self.get_logger().info('▶️ Executing Cartesian trajectory...')
-        pub.publish(traj)
+        self.get_logger().info(f'✅ Cartesian path planned. Sending trajectory...')
+        trajectory = future.result().solution.joint_trajectory
+        self.joint_trajectory_pub.publish(trajectory)
 
     def update_ee_marker(self):
         try:
@@ -200,26 +180,6 @@ class MoveOnSlidingSphere(Node):
             self.publish_trajectories()
         except Exception as e:
             self.get_logger().warn(f'⚠️ TF lookup failed: {e}')
-
-    def publish_sphere_marker(self, center, marker_id):
-        marker = Marker()
-        marker.header.frame_id = 'base_link'
-        marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = 'sphere_center'
-        marker.id = marker_id
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.pose.position.x = center[0]
-        marker.pose.position.y = center[1]
-        marker.pose.position.z = center[2]
-        marker.scale.x = self.radius * 2
-        marker.scale.y = self.radius * 2
-        marker.scale.z = self.radius * 2
-        marker.color.r = 0.2
-        marker.color.g = 0.5
-        marker.color.b = 1.0
-        marker.color.a = 0.4
-        self.marker_pub.publish(marker)
 
     def publish_trajectories(self):
         marker_array = MarkerArray()
@@ -244,7 +204,7 @@ class MoveOnSlidingSphere(Node):
         sphere_line.scale.x = 0.003
         sphere_line.color.b = 1.0
         sphere_line.color.a = 1.0
-        sphere_line.points = [Point(x=p[0], y=p[1], z=p[2]) for p in self.sphere_traj]
+        sphere_line.points = [Point(x=p[0], y=p[1], z=p[2]) for _, p in self.arc_points_and_centers]
 
         marker_array.markers.append(ee_line)
         marker_array.markers.append(sphere_line)
