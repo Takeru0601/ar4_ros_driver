@@ -25,15 +25,10 @@ class MoveOnSlidingSphere(Node):
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
         self.marker_array_pub = self.create_publisher(MarkerArray, '/visualization_marker_array', 10)
 
-        self.timer = self.create_timer(0.2, self.update_ee_marker)  # real-time trajectory publishing
+        self.timer = self.create_timer(0.2, self.update_ee_marker)
 
         self.current_joint_state = JointState()
-        self.joint_state_sub = self.create_subscription(
-            JointState,
-            '/joint_states',
-            self.joint_state_callback,
-            10
-        )
+        self.joint_state_sub = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -84,12 +79,12 @@ class MoveOnSlidingSphere(Node):
 
                 for j in slide_range:
                     x_slide = j * slide_resolution
-                    cx = self.center_base_x + x_slide  # 中心だけスライド
-                    cy = self.center_base_ycz = self.center_base_z
+                    cx = self.center_base_x + x_slide
+                    cy = self.center_base_y
                     cz = self.center_base_z
 
-　　　　　　　　　　　x = self.center_base_x + x_slide + circle_radius * math.cos(theta)
-　　　　　　　　　　　z = self.center_base_z + circle_radius * math.sin(theta)
+                    x = self.center_base_x + x_slide + circle_radius * math.cos(theta)
+                    z = self.center_base_z + circle_radius * math.sin(theta)
 
                     pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
                     pose.header.stamp = self.get_clock().now().to_msg()
