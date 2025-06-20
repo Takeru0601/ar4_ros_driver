@@ -8,9 +8,8 @@ import tf_transformations
 
 from geometry_msgs.msg import PoseStamped, Point
 from sensor_msgs.msg import JointState
-from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import MotionPlanRequest, Constraints, PositionConstraint, OrientationConstraint
-from moveit_msgs.srv import GetPositionIK
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from moveit_msgs.srv import GetPositionIK, GetCartesianPath
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -21,11 +20,10 @@ from rclpy.time import Time
 class MoveOnSlidingSphere(Node):
     def __init__(self):
         super().__init__('move_on_sliding_sphere')
-        self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
         self.marker_array_pub = self.create_publisher(MarkerArray, '/visualization_marker_array', 10)
 
-        self.timer = self.create_timer(0.2, self.update_ee_marker)  # real-time trajectory publishing
+        self.timer = self.create_timer(0.2, self.update_ee_marker)
 
         self.current_joint_state = JointState()
         self.joint_state_sub = self.create_subscription(
@@ -47,18 +45,19 @@ class MoveOnSlidingSphere(Node):
         self.sphere_traj = []
 
         self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
+        self.cartesian_client = self.create_client(GetCartesianPath, '/compute_cartesian_path')
+
         while not self.ik_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for /compute_ik service...')
+        while not self.cartesian_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('Waiting for /compute_cartesian_path service...')
 
         self.get_logger().info('⏳ Generating feasible target points...')
         self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
         self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
 
-        self.current_index = 0
-        self.get_logger().info('⏳ Waiting for MoveGroup action server...')
-        self._action_client.wait_for_server()
-        self.get_logger().info('✅ MoveGroup action server connected.')
-        self.send_next_goal()
+        self.get_logger().info('⏳ Planning Cartesian Path...')
+        self.send_cartesian_path()
 
     def joint_state_callback(self, msg):
         self.current_joint_state = msg
@@ -159,66 +158,37 @@ class MoveOnSlidingSphere(Node):
 
         return future.result() and future.result().error_code.val == 1
 
-    def send_next_goal(self):
-        if self.current_index >= len(self.arc_points_and_centers):
-            self.get_logger().info('🎉 All feasible points executed.')
-            rclpy.shutdown()
-            return
+    def send_cartesian_path(self):
+        from moveit_msgs.srv import GetCartesianPath
 
-        pose, center = self.arc_points_and_centers[self.current_index]
-        self.sphere_traj.append(center)
-        self.publish_sphere_marker(center, self.current_index)
-
-        goal_msg = MoveGroup.Goal()
-        req = MotionPlanRequest()
+        req = GetCartesianPath.Request()
         req.group_name = 'ar_manipulator'
-        req.max_velocity_scaling_factor = 0.3
-        req.max_acceleration_scaling_factor = 0.3
-        req.start_state.is_diff = False
+        req.link_name = 'ee_link'
+        req.header.frame_id = 'base_link'
         req.start_state.joint_state = self.current_joint_state
+        req.jump_threshold = 0.0
+        req.max_step = 0.01
+        req.avoid_collisions = True
+        req.waypoints = [pose for pose, _ in self.arc_points_and_centers]
 
-        pc = PositionConstraint()
-        pc.header.frame_id = pose.header.frame_id
-        pc.link_name = 'ee_link'
-        box = SolidPrimitive()
-        box.type = SolidPrimitive.BOX
-        box.dimensions = [0.01, 0.01, 0.01]
-        pc.constraint_region.primitives.append(box)
-        pc.constraint_region.primitive_poses.append(pose.pose)
+        future = self.cartesian_client.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
 
-        oc = OrientationConstraint()
-        oc.header.frame_id = pose.header.frame_id
-        oc.link_name = 'ee_link'
-        oc.orientation = pose.pose.orientation
-        oc.absolute_x_axis_tolerance = 0.3
-        oc.absolute_y_axis_tolerance = 0.3
-        oc.absolute_z_axis_tolerance = 0.3
-        oc.weight = 1.0
-
-        constraints = Constraints()
-        constraints.position_constraints.append(pc)
-        constraints.orientation_constraints.append(oc)
-        req.goal_constraints.append(constraints)
-        goal_msg.request = req
-
-        self._send_goal_future = self._action_client.send_goal_async(goal_msg)
-        self._send_goal_future.add_done_callback(self.goal_response_callback)
-
-    def goal_response_callback(self, future):
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self.get_logger().error('❌ Goal rejected')
-            rclpy.shutdown()
+        if not future.result():
+            self.get_logger().error('❌ Cartesian path planning failed.')
             return
-        self.get_logger().info(f'▶️ Executing point {self.current_index + 1}/{len(self.arc_points_and_centers)}')
-        self._get_result_future = goal_handle.get_result_async()
-        self._get_result_future.add_done_callback(self.get_result_callback)
 
-    def get_result_callback(self, future):
-        result = future.result().result
-        self.get_logger().info(f'🎯 Result code: {result.error_code.val}')
-        self.current_index += 1
-        self.send_next_goal()
+        fraction = future.result().fraction
+        if fraction < 1.0:
+            self.get_logger().warn(f'⚠️ Cartesian path only {fraction*100:.1f}% achieved.')
+        else:
+            self.get_logger().info(f'✅ Cartesian path successfully planned.')
+
+        traj = future.result().solution.joint_trajectory
+
+        pub = self.create_publisher(JointTrajectory, '/follow_joint_trajectory', 10)
+        self.get_logger().info('▶️ Executing Cartesian trajectory...')
+        pub.publish(traj)
 
     def update_ee_marker(self):
         try:
