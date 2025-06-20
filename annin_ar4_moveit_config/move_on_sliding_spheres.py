@@ -218,7 +218,7 @@ class MoveOnSlidingSphere(Node):
 
         try:
             trans = self.tf_buffer.lookup_transform(
-                'base_link', 'ee_link', Time(), timeout=Duration(seconds=1).to_msg())
+                'base_link', 'ee_link', Time(seconds=0), timeout=Duration(seconds=1).to_msg())
             pos = trans.transform.translation
             point = Point(x=pos.x, y=pos.y, z=pos.z)
             self.ee_traj.append(point)
