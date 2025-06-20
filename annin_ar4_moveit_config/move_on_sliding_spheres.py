@@ -85,8 +85,8 @@ class MoveOnSlidingSphere(Node):
                 for j in slide_range:
                     x_slide = j * slide_resolution
                     cx = self.center_base_x + x_slide  # 中心だけスライド
-                    cy = self.center_base_y
-　　　　　　　　　　　cz = self.center_base_z
+                    cy = self.center_base_ycz = self.center_base_z
+                    cz = self.center_base_z
 
 　　　　　　　　　　　x = self.center_base_x + x_slide + circle_radius * math.cos(theta)
 　　　　　　　　　　　z = self.center_base_z + circle_radius * math.sin(theta)
