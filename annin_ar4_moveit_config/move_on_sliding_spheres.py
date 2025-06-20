@@ -22,6 +22,15 @@ class MoveOnSlidingSphere(Node):
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
         self.marker_array_pub = self.create_publisher(MarkerArray, '/visualization_marker_array', 10)
 
+        # JointState 購読開始
+        self.current_joint_state = JointState()
+        self.joint_state_sub = self.create_subscription(
+            JointState,
+            '/joint_states',
+            self.joint_state_callback,
+            10
+        )
+
         self.center_base_x = 0.0
         self.center_base_y = -0.45
         self.center_base_z = 0.0
@@ -43,6 +52,9 @@ class MoveOnSlidingSphere(Node):
         self._action_client.wait_for_server()
         self.get_logger().info('✅ MoveGroup action server connected.')
         self.send_next_goal()
+
+    def joint_state_callback(self, msg):
+        self.current_joint_state = msg
 
     def generate_intersection_points_with_dynamic_slide(self):
         points = []
@@ -155,14 +167,17 @@ class MoveOnSlidingSphere(Node):
         self.ee_traj.append(pose.pose.position)
         self.sphere_traj.append(center)
         self.publish_sphere_marker(center, self.current_index)
-        self.publish_trajectories()  # <== 軌跡をリアルタイムで描画
+        self.publish_trajectories()
 
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
         req.group_name = 'ar_manipulator'
         req.max_velocity_scaling_factor = 0.3
         req.max_acceleration_scaling_factor = 0.3
-        req.start_state.is_diff = True
+
+        # 🔧 現在の関節状態を使用して無駄な回転を防ぐ
+        req.start_state.is_diff = False
+        req.start_state.joint_state = self.current_joint_state
 
         pc = PositionConstraint()
         pc.header.frame_id = pose.header.frame_id
@@ -259,6 +274,7 @@ class MoveOnSlidingSphere(Node):
         marker_array.markers.append(ee_line)
         marker_array.markers.append(sphere_line)
         self.marker_array_pub.publish(marker_array)
+
 
 def main(args=None):
     rclpy.init(args=args)
