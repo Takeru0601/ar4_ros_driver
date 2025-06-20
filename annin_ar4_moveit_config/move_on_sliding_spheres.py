@@ -25,10 +25,15 @@ class MoveOnSlidingSphere(Node):
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
         self.marker_array_pub = self.create_publisher(MarkerArray, '/visualization_marker_array', 10)
 
-        self.timer = self.create_timer(0.2, self.update_ee_marker)
+        self.timer = self.create_timer(0.2, self.update_ee_marker)  # real-time trajectory publishing
 
         self.current_joint_state = JointState()
-        self.joint_state_sub = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
+        self.joint_state_sub = self.create_subscription(
+            JointState,
+            '/joint_states',
+            self.joint_state_callback,
+            10
+        )
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -82,7 +87,7 @@ class MoveOnSlidingSphere(Node):
                     cx = self.center_base_x + x_slide
                     cy = self.center_base_y
                     cz = self.center_base_z
-                    
+
                     x = cx + circle_radius * math.cos(theta)
                     z = cz + circle_radius * math.sin(theta)
 
