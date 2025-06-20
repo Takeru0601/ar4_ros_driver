@@ -26,7 +26,7 @@ class MoveOnSlidingSphere(Node):
         self.center_base_y = -0.45
         self.center_base_z = 0.0
         self.radius = 0.2
-        self.y_planes = [-0.45, -0.43, -0.41, -0.39]
+        self.y_planes = [-0.45, -0.43, -0.41, -0.39, -0.37, -0.35]
         self.ee_traj = []
         self.sphere_traj = []
 
@@ -35,7 +35,7 @@ class MoveOnSlidingSphere(Node):
             self.get_logger().info('Waiting for /compute_ik service...')
 
         self.get_logger().info('⏳ Generating feasible target points...')
-        self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()  # NOTE: Feasibility check will stamp header inside
+        self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
         self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
 
         self.current_index = 0
@@ -44,8 +44,48 @@ class MoveOnSlidingSphere(Node):
         self.get_logger().info('✅ MoveGroup action server connected.')
         self.send_next_goal()
 
+    def generate_intersection_points_with_dynamic_slide(self):
+        points = []
+        steps = 18
+        max_slide = 0.2
+        slide_resolution = 0.01
+        slide_attempts = int(max_slide / slide_resolution)
+
+        for plane_idx, y in enumerate(self.y_planes):
+            dy = y - self.center_base_y
+            if abs(dy) > self.radius:
+                continue
+            circle_radius = math.sqrt(self.radius**2 - dy**2)
+
+            for i in range(steps + 1):
+                theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
+                theta = math.radians(theta_deg)
+
+                if 0 <= theta_deg < 90:
+                    slide_range = range(-slide_attempts, 1)
+                else:
+                    slide_range = range(0, slide_attempts + 1)
+
+                for j in slide_range:
+                    x_slide = j * slide_resolution
+                    cx = self.center_base_x + x_slide
+                    cy = self.center_base_y
+                    cz = self.center_base_z
+
+                    x = cx + circle_radius * math.cos(theta)
+                    z = cz + circle_radius * math.sin(theta)
+
+                    pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
+                    pose.header.stamp = self.get_clock().now().to_msg()
+
+                    if self.quick_feasibility_check(pose):
+                        points.append((pose, [cx, cy, cz]))
+                        break
+                else:
+                    self.get_logger().warn(f'❌ No IK solution at y={y:.3f}, θ={theta_deg:.1f}')
+        return points
+
     def compute_pose_pointing_to_center(self, x, y, z, cx, cy, cz):
-        # NOTE: PoseStamped will be stamped in quick_feasibility_check
         dir_x, dir_y, dir_z = cx - x, cy - y, cz - z
         norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
         dir_x /= norm
@@ -90,6 +130,20 @@ class MoveOnSlidingSphere(Node):
         pose.pose.orientation.z = quat[2]
         pose.pose.orientation.w = quat[3]
         return pose
+
+    def quick_feasibility_check(self, pose):
+        request = GetPositionIK.Request()
+        request.ik_request.group_name = 'ar_manipulator'
+        request.ik_request.pose_stamped = pose
+        request.ik_request.ik_link_name = 'ee_link'
+        request.ik_request.timeout.sec = 1
+
+        future = self.ik_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future)
+
+        if future.result() and future.result().error_code.val == 1:
+            return True
+        return False
 
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points_and_centers):
