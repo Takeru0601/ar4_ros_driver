@@ -72,19 +72,27 @@ class MoveOnSlidingSphere(Node):
                 theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
                 theta = math.radians(theta_deg)
 
-                slide_bias = -max_slide * math.cos(theta)  # 軽く反対方向に変更
+                # First try without sliding
+                cx0 = self.center_base_x
+                x0 = cx0 + circle_radius * math.cos(theta)
+                z0 = self.center_base_z + circle_radius * math.sin(theta)
+                pose0 = self.compute_pose_pointing_to_center(x0, y, z0, cx0, self.center_base_y, self.center_base_z)
+                pose0.header.stamp = self.get_clock().now().to_msg()
+
+                if self.quick_feasibility_check(pose0):
+                    points.append((pose0, [cx0, self.center_base_y, self.center_base_z]))
+                    continue
+
+                # If failed, apply dynamic slide
+                slide_bias = -max_slide * math.cos(theta)
                 cx = self.center_base_x + slide_bias
-                cy = self.center_base_y
-                cz = self.center_base_z
-
                 x = cx + circle_radius * math.cos(theta)
-                z = cz + circle_radius * math.sin(theta)
-
-                pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
+                z = self.center_base_z + circle_radius * math.sin(theta)
+                pose = self.compute_pose_pointing_to_center(x, y, z, cx, self.center_base_y, self.center_base_z)
                 pose.header.stamp = self.get_clock().now().to_msg()
 
                 if self.quick_feasibility_check(pose):
-                    points.append((pose, [cx, cy, cz]))
+                    points.append((pose, [cx, self.center_base_y, self.center_base_z]))
                 else:
                     self.get_logger().warn(f'❌ No IK at y={y:.3f}, θ={theta_deg:.1f}')
         return points
@@ -223,7 +231,7 @@ class MoveOnSlidingSphere(Node):
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'sphere_center'
-        marker.id = 999  # IDを固定して上書きする
+        marker.id = 999
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = center[0]
