@@ -17,6 +17,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import TransformListener, Buffer
 from rclpy.duration import Duration
 from rclpy.time import Time
+from builtin_interfaces.msg import Time as BuiltinTime
 
 class MoveOnSlidingSphere(Node):
     def __init__(self):
@@ -217,8 +218,9 @@ class MoveOnSlidingSphere(Node):
         self.get_logger().info(f'🎯 Result code: {result.error_code.val}')
 
         try:
+            zero_time = BuiltinTime()
             trans = self.tf_buffer.lookup_transform(
-                'base_link', 'ee_link', Time(seconds=0), timeout=Duration(seconds=1).to_msg())
+                'base_link', 'ee_link', zero_time, timeout=Duration(seconds=1).to_msg())
             pos = trans.transform.translation
             point = Point(x=pos.x, y=pos.y, z=pos.z)
             self.ee_traj.append(point)
