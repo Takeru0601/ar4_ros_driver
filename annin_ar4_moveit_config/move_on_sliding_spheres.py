@@ -222,9 +222,9 @@ class MoveOnSlidingSphere(Node):
 
     def update_ee_marker(self):
         try:
-            now = self.get_clock().now().to_msg()
+            zero_time = BuiltinTime()  # 最新のTFを取得
             trans = self.tf_buffer.lookup_transform(
-                'base_link', 'ee_link', now, timeout=Duration(seconds=0.5).to_msg())
+                'base_link', 'ee_link', zero_time, timeout=Duration(seconds=0.5).to_msg())
             pos = trans.transform.translation
             point = Point(x=pos.x, y=pos.y, z=pos.z)
             self.ee_traj.append(point)
