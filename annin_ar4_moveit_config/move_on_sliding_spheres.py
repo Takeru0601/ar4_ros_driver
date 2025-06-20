@@ -14,6 +14,10 @@ from moveit_msgs.srv import GetPositionIK
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker, MarkerArray
 
+from tf2_ros import TransformListener, Buffer
+from builtin_interfaces.msg import Duration
+import tf2_ros
+
 
 class MoveOnSlidingSphere(Node):
     def __init__(self):
@@ -22,7 +26,6 @@ class MoveOnSlidingSphere(Node):
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
         self.marker_array_pub = self.create_publisher(MarkerArray, '/visualization_marker_array', 10)
 
-        # JointState 購読開始
         self.current_joint_state = JointState()
         self.joint_state_sub = self.create_subscription(
             JointState,
@@ -30,6 +33,9 @@ class MoveOnSlidingSphere(Node):
             self.joint_state_callback,
             10
         )
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.center_base_x = 0.0
         self.center_base_y = -0.45
@@ -164,25 +170,20 @@ class MoveOnSlidingSphere(Node):
             return
 
         pose, center = self.arc_points_and_centers[self.current_index]
-        self.ee_traj.append(pose.pose.position)
         self.sphere_traj.append(center)
         self.publish_sphere_marker(center, self.current_index)
-        self.publish_trajectories()
 
         goal_msg = MoveGroup.Goal()
         req = MotionPlanRequest()
         req.group_name = 'ar_manipulator'
         req.max_velocity_scaling_factor = 0.3
         req.max_acceleration_scaling_factor = 0.3
-
-        # 🔧 現在の関節状態を使用して無駄な回転を防ぐ
         req.start_state.is_diff = False
         req.start_state.joint_state = self.current_joint_state
 
         pc = PositionConstraint()
         pc.header.frame_id = pose.header.frame_id
         pc.link_name = 'ee_link'
-        pc.target_point_offset.z = 0.0
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
         box.dimensions = [0.01, 0.01, 0.01]
@@ -220,6 +221,19 @@ class MoveOnSlidingSphere(Node):
     def get_result_callback(self, future):
         result = future.result().result
         self.get_logger().info(f'🎯 Result code: {result.error_code.val}')
+
+        # EE の通過点を TF から取得して記録
+        try:
+            trans = self.tf_buffer.lookup_transform(
+                'base_link', 'ee_link', rclpy.time.Time(),
+                timeout=Duration(sec=1))
+            pos = trans.transform.translation
+            point = Point(x=pos.x, y=pos.y, z=pos.z)
+            self.ee_traj.append(point)
+        except Exception as e:
+            self.get_logger().warn(f'⚠️ TF lookup failed: {e}')
+
+        self.publish_trajectories()
         self.current_index += 1
         self.send_next_goal()
 
@@ -245,8 +259,8 @@ class MoveOnSlidingSphere(Node):
 
     def publish_trajectories(self):
         if not self.ee_traj or not self.sphere_traj:
-            self.get_logger().warn("❗ Trajectories are empty.")
             return
+
         marker_array = MarkerArray()
 
         ee_line = Marker()
@@ -258,7 +272,7 @@ class MoveOnSlidingSphere(Node):
         ee_line.scale.x = 0.005
         ee_line.color.g = 1.0
         ee_line.color.a = 1.0
-        ee_line.points = [Point(x=p.x, y=p.y, z=p.z) for p in self.ee_traj]
+        ee_line.points = self.ee_traj
 
         sphere_line = Marker()
         sphere_line.header.frame_id = 'base_link'
