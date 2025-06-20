@@ -25,15 +25,10 @@ class MoveOnSlidingSphere(Node):
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
         self.marker_array_pub = self.create_publisher(MarkerArray, '/visualization_marker_array', 10)
 
-        self.timer = self.create_timer(0.2, self.update_ee_marker)  # real-time trajectory publishing
+        self.timer = self.create_timer(0.2, self.update_ee_marker)
 
         self.current_joint_state = JointState()
-        self.joint_state_sub = self.create_subscription(
-            JointState,
-            '/joint_states',
-            self.joint_state_callback,
-            10
-        )
+        self.joint_state_sub = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -67,8 +62,6 @@ class MoveOnSlidingSphere(Node):
         points = []
         steps = 18
         max_slide = 0.2
-        slide_resolution = 0.01
-        slide_attempts = int(max_slide / slide_resolution)
 
         for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center_base_y
@@ -80,25 +73,21 @@ class MoveOnSlidingSphere(Node):
                 theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
                 theta = math.radians(theta_deg)
 
-                slide_range = range(-slide_attempts, 1) if 0 <= theta_deg < 90 else range(0, slide_attempts + 1)
+                slide_bias = max_slide * math.cos(theta)
+                cx = self.center_base_x + slide_bias
+                cy = self.center_base_y
+                cz = self.center_base_z
 
-                for j in slide_range:
-                    x_slide = j * slide_resolution
-                    cx = self.center_base_x + x_slide
-                    cy = self.center_base_y
-                    cz = self.center_base_z
+                x = cx + circle_radius * math.cos(theta)
+                z = cz + circle_radius * math.sin(theta)
 
-                    x = cx + circle_radius * math.cos(theta)
-                    z = cz + circle_radius * math.sin(theta)
+                pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
+                pose.header.stamp = self.get_clock().now().to_msg()
 
-                    pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
-                    pose.header.stamp = self.get_clock().now().to_msg()
-
-                    if self.quick_feasibility_check(pose):
-                        points.append((pose, [cx, cy, cz]))
-                        break
+                if self.quick_feasibility_check(pose):
+                    points.append((pose, [cx, cy, cz]))
                 else:
-                    self.get_logger().warn(f'❌ No IK solution at y={y:.3f}, θ={theta_deg:.1f}')
+                    self.get_logger().warn(f'❌ No IK at y={y:.3f}, θ={theta_deg:.1f}')
         return points
 
     def compute_pose_pointing_to_center(self, x, y, z, cx, cy, cz):
