@@ -82,9 +82,9 @@ class MoveOnSlidingSphere(Node):
                     cx = self.center_base_x + x_slide
                     cy = self.center_base_y
                     cz = self.center_base_z
-
-                    x = self.center_base_x + x_slide + circle_radius * math.cos(theta)
-                    z = self.center_base_z + circle_radius * math.sin(theta)
+                    
+                    x = cx + circle_radius * math.cos(theta)
+                    z = cz + circle_radius * math.sin(theta)
 
                     pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
                     pose.header.stamp = self.get_clock().now().to_msg()
