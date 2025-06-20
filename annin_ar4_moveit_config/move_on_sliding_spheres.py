@@ -16,7 +16,6 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from tf2_ros import TransformListener, Buffer
 from rclpy.duration import Duration
-from rclpy.time import Time
 from builtin_interfaces.msg import Time as BuiltinTime
 
 class MoveOnSlidingSphere(Node):
@@ -25,6 +24,8 @@ class MoveOnSlidingSphere(Node):
         self._action_client = ActionClient(self, MoveGroup, 'move_action')
         self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
         self.marker_array_pub = self.create_publisher(MarkerArray, '/visualization_marker_array', 10)
+
+        self.timer = self.create_timer(0.2, self.update_ee_marker)  # real-time trajectory publishing
 
         self.current_joint_state = JointState()
         self.joint_state_sub = self.create_subscription(
@@ -216,20 +217,20 @@ class MoveOnSlidingSphere(Node):
     def get_result_callback(self, future):
         result = future.result().result
         self.get_logger().info(f'🎯 Result code: {result.error_code.val}')
+        self.current_index += 1
+        self.send_next_goal()
 
+    def update_ee_marker(self):
         try:
-            zero_time = BuiltinTime()
+            now = self.get_clock().now().to_msg()
             trans = self.tf_buffer.lookup_transform(
-                'base_link', 'ee_link', zero_time, timeout=Duration(seconds=1).to_msg())
+                'base_link', 'ee_link', now, timeout=Duration(seconds=0.5).to_msg())
             pos = trans.transform.translation
             point = Point(x=pos.x, y=pos.y, z=pos.z)
             self.ee_traj.append(point)
+            self.publish_trajectories()
         except Exception as e:
             self.get_logger().warn(f'⚠️ TF lookup failed: {e}')
-
-        self.publish_trajectories()
-        self.current_index += 1
-        self.send_next_goal()
 
     def publish_sphere_marker(self, center, marker_id):
         marker = Marker()
@@ -252,9 +253,6 @@ class MoveOnSlidingSphere(Node):
         self.marker_pub.publish(marker)
 
     def publish_trajectories(self):
-        if not self.ee_traj or not self.sphere_traj:
-            return
-
         marker_array = MarkerArray()
 
         ee_line = Marker()
