@@ -15,25 +15,8 @@
         <param name="tf_prefix">${tf_prefix}</param>
       </hardware>
 
-      <joint name="${tf_prefix}gripper_jaw1_joint">
-        <command_interface name="position" />
-        <state_interface name="position">
-          <param name="initial_value">0.0</param>
-        </state_interface>
-        <state_interface name="velocity">
-          <param name="initial_value">0.0</param>
-        </state_interface>
-      </joint>
-      <joint name="${tf_prefix}gripper_jaw2_joint">
-        <param name="mimic">${tf_prefix}gripper_jaw1_joint</param>
-        <param name="multiplier">1</param>
-        <state_interface name="position">
-          <param name="initial_value">0.0</param>
-        </state_interface>
-        <state_interface name="velocity">
-          <param name="initial_value">0.0</param>
-        </state_interface>
-      </joint>
+      <!-- ジョイント関連設定を削除 -->
+      <!-- gripper_jaw1_joint と gripper_jaw2_joint は必要ない場合、以下を削除 -->
 
     </ros2_control>
   </xacro:macro>
