@@ -14,7 +14,7 @@
     <link name="${tf_prefix}gripper_base_link">
       <visual>
         <geometry>
-          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_gripper/gripper_base_link.stl" />
+          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl" />
         </geometry>
         <material name="">
           <color rgba="1 1 0 1"/>
