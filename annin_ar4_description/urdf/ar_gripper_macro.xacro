@@ -4,7 +4,7 @@
 
     <!-- エンドエフェクタに取り付け（Z→X回転） -->
     <joint name="${tf_prefix}gripper_base_joint" type="fixed">
-      <origin xyz="0.0 0.0 0.0" rpy="${pi} 0 ${-pi/2}">
+      <origin xyz="0.0 0.0 0.0" rpy="${pi} 0 ${-pi/2}"/>  <!-- ← タグを正しく閉じた -->
       <parent link="${parent}"/>
       <child link="${tf_prefix}gripper_base_link"/>
     </joint>
@@ -13,7 +13,8 @@
     <link name="${tf_prefix}gripper_base_link">
       <visual>
         <geometry>
-          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl" scale="0.001 0.001 0.001"/>
+          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl"
+                scale="0.001 0.001 0.001"/>
         </geometry>
         <material name="">
           <color rgba="1 1 0 1"/>
@@ -21,11 +22,12 @@
       </visual>
       <collision>
         <geometry>
-          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl" scale="0.001 0.001 0.001"/>
+          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl"
+                scale="0.001 0.001 0.001"/>
         </geometry>
       </collision>
       <inertial>
-        <origin xyz="0 0 0" rpy="0 0 0"/> 
+        <origin xyz="0 0 0" rpy="0 0 0"/>
         <mass value="1.5"/>
         <inertia ixx="0.001" ixy="0" ixz="0"
                  iyy="0.001" iyz="0" izz="0.001"/>
