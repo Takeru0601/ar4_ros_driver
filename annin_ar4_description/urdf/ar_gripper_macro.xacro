@@ -13,9 +13,7 @@
     <link name="${tf_prefix}gripper_base_link">
       <visual>
         <geometry>
-          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl">
-            <scale>0.001 0.001 0.001</scale>
-          </mesh>
+          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl" scale="0.001 0.001 0.001"/>
         </geometry>
         <material name="">
           <color rgba="1 1 0 1"/>
@@ -23,9 +21,7 @@
       </visual>
       <collision>
         <geometry>
-          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl">
-            <scale>0.001 0.001 0.001</scale>
-          </mesh>
+          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl" scale="0.001 0.001 0.001"/>
         </geometry>
       </collision>
       <inertial>
@@ -35,8 +31,6 @@
                  iyy="0.001" iyz="0" izz="0.001"/>
       </inertial>
     </link>
-
-    <!-- jaws（顎）や可動ジョイントは削除済み -->
 
   </xacro:macro>
 </robot>
