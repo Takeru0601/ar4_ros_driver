@@ -1,19 +1,21 @@
+<?xml version="1.0"?>
 <robot xmlns:xacro="http://wiki.ros.org/xacro">
-  <xacro:macro name="ar_gripper" params="
-    tf_prefix
-    parent
-  ">
+  <xacro:macro name="ar_gripper" params="tf_prefix parent">
 
+    <!-- 固定ジョイントでエンドエフェクタに取り付け -->
     <joint name="${tf_prefix}gripper_base_joint" type="fixed">
       <origin xyz="0.0 0.0 0.0" rpy="-1.5708 0.0 0.0"/>
       <parent link="${parent}"/>
       <child link="${tf_prefix}gripper_base_link"/>
     </joint>
 
+    <!-- グリッパー本体（スプレーガン） -->
     <link name="${tf_prefix}gripper_base_link">
       <visual>
         <geometry>
-          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl" />
+          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl">
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
         </geometry>
         <material name="">
           <color rgba="1 1 0 1"/>
@@ -21,17 +23,21 @@
       </visual>
       <collision>
         <geometry>
-          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl" />
+          <mesh filename="file://$(find annin_ar4_description)/meshes/ar4_mk3/spraygun_EE.stl">
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
         </geometry>
       </collision>
       <inertial>
         <origin xyz="-0.00073621 -0.02341392 -0.00435302"/>
         <mass value="0.08"/>
-        <inertia ixx="0.00002375" ixy="0.00000002" ixz="-0.00000017" iyy="0.00004082" iyz="-0.00000029" izz="0.00004254"/>
+        <inertia 
+          ixx="0.00002375" ixy="0.00000002" ixz="-0.00000017"
+          iyy="0.00004082" iyz="-0.00000029" izz="0.00004254"/>
       </inertial>
     </link>
 
-    <!-- Remove gripper jaws and their joints -->
-    <!-- No need for gripper_jaw1_link, gripper_jaw2_link, or their respective joints -->
+    <!-- jaws（顎）や可動ジョイントは削除済み -->
+
   </xacro:macro>
 </robot>
