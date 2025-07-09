@@ -29,11 +29,10 @@
         </geometry>
       </collision>
       <inertial>
-        <origin xyz="-0.00073621 -0.02341392 -0.00435302"/>
-        <mass value="0.08"/>
-        <inertia 
-          ixx="0.00002375" ixy="0.00000002" ixz="-0.00000017"
-          iyy="0.00004082" iyz="-0.00000029" izz="0.00004254"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="1.5"/>
+        <inertia ixx="0.001" ixy="0" ixz="0"
+                 iyy="0.001" iyz="0" izz="0.001"/>
       </inertial>
     </link>
 
