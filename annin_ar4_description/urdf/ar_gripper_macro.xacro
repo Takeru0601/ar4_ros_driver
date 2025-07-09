@@ -2,14 +2,14 @@
 <robot xmlns:xacro="http://wiki.ros.org/xacro">
   <xacro:macro name="ar_gripper" params="tf_prefix parent">
 
-    <!-- 固定ジョイントでエンドエフェクタに取り付け -->
+    <!-- エンドエフェクタに取り付け（Z→X回転） -->
     <joint name="${tf_prefix}gripper_base_joint" type="fixed">
-      <origin xyz="0.0 0.0 0.0" rpy="-1.5708 0.0 0.0"/>
+      <origin xyz="0.0 0.0 0.0" rpy="1.5708 0.0 1.5708"/>
       <parent link="${parent}"/>
       <child link="${tf_prefix}gripper_base_link"/>
     </joint>
 
-    <!-- グリッパー本体（スプレーガン） -->
+    <!-- スプレーガン本体 -->
     <link name="${tf_prefix}gripper_base_link">
       <visual>
         <geometry>
@@ -25,7 +25,7 @@
         </geometry>
       </collision>
       <inertial>
-        <origin xyz="0 0 0" rpy="1.5708 0 1.5708"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/> 
         <mass value="1.5"/>
         <inertia ixx="0.001" ixy="0" ixz="0"
                  iyy="0.001" iyz="0" izz="0.001"/>
