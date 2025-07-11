@@ -180,13 +180,14 @@ class MoveOnSlidingSphere(Node):
         trajectory = JointTrajectory()
         trajectory.joint_names = raw_traj.joint_names
         trajectory.points = []
-        for pt in raw_traj.points:
+        dt = 0.1
+        for i, pt in enumerate(raw_traj.points):
             point = JointTrajectoryPoint()
             point.positions = pt.positions
             point.velocities = pt.velocities
             point.accelerations = pt.accelerations
             point.effort = pt.effort
-            point.time_from_start = pt.time_from_start
+            point.time_from_start = rclpy.time.Duration(seconds=dt * i).to_msg()
             trajectory.points.append(point)
 
         goal_msg = FollowJointTrajectory.Goal()
@@ -255,8 +256,10 @@ class MoveOnSlidingSphere(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = MoveOnSlidingSphere()
-    rclpy.spin(node)
-
-
-if __name__ == '__main__':
-    main()
+    try:
+        rclpy.spin(node)  # ノードを終了せずRViz更新を継続
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
