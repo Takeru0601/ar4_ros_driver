@@ -34,10 +34,10 @@ class MoveOnSlidingSphere(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.center_base_x = 0.0
-        self.center_base_y = -0.40
+        self.center_base_y = -0.45
         self.center_base_z = 0.0
-        self.radius = 0.3
-        self.y_planes = [-0.40, -0.38, -0.36]
+        self.radius = 0.2
+        self.y_planes = [-0.45, -0.43, -0.41]
         self.ee_traj = []
 
         self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
@@ -60,10 +60,7 @@ class MoveOnSlidingSphere(Node):
     def generate_intersection_points_with_dynamic_slide(self):
         points = []
         steps = 18
-        max_slide = self.radius
-        slide_step = 0.05
-        raw_candidates = [round(-max_slide + slide_step * i, 3) for i in range(int(2 * max_slide / slide_step) + 1)]
-        slide_candidates = sorted(raw_candidates, key=lambda x: abs(x))
+        max_slide = 0.2
 
         for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center_base_y
@@ -75,52 +72,22 @@ class MoveOnSlidingSphere(Node):
                 theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
                 theta = math.radians(theta_deg)
 
-                best_pose = None
-                best_center = None
-                min_joint_diff = float('inf')
+                slide_bias = -max_slide * math.cos(theta)  # 軽く反対方向に変更
+                cx = self.center_base_x + slide_bias
+                cy = self.center_base_y
+                cz = self.center_base_z
 
-                for slide in slide_candidates:
-                    cx = self.center_base_x + slide
-                    x = cx + circle_radius * math.cos(theta)
-                    z = self.center_base_z + circle_radius * math.sin(theta)
-                    pose = self.compute_pose_pointing_to_center(x, y, z, cx, self.center_base_y, self.center_base_z)
-                    pose.header.stamp = self.get_clock().now().to_msg()
+                x = cx + circle_radius * math.cos(theta)
+                z = cz + circle_radius * math.sin(theta)
 
-                    if self.quick_feasibility_check(pose):
-                        joint_diff = self.compute_joint_difference(pose)
-                        if joint_diff < min_joint_diff:
-                            min_joint_diff = joint_diff
-                            best_pose = pose
-                            best_center = [cx, self.center_base_y, self.center_base_z]
+                pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
+                pose.header.stamp = self.get_clock().now().to_msg()
 
-                if best_pose:
-                    points.append((best_pose, best_center))
+                if self.quick_feasibility_check(pose):
+                    points.append((pose, [cx, cy, cz]))
                 else:
                     self.get_logger().warn(f'❌ No IK at y={y:.3f}, θ={theta_deg:.1f}')
         return points
-
-    def compute_joint_difference(self, pose):
-        request = GetPositionIK.Request()
-        request.ik_request.group_name = 'ar_manipulator'
-        request.ik_request.pose_stamped = pose
-        request.ik_request.ik_link_name = 'ee_link'
-        request.ik_request.timeout.sec = 1
-
-        future = self.ik_client.call_async(request)
-        rclpy.spin_until_future_complete(self, future)
-        result = future.result()
-
-        if not result or result.error_code.val != 1:
-            return float('inf')
-
-        target_positions = dict(zip(result.solution.joint_state.name, result.solution.joint_state.position))
-        current_positions = dict(zip(self.current_joint_state.name, self.current_joint_state.position))
-
-        diff_sum = 0.0
-        for name in target_positions:
-            if name in current_positions:
-                diff_sum += (target_positions[name] - current_positions[name]) ** 2
-        return math.sqrt(diff_sum)
 
     def compute_pose_pointing_to_center(self, x, y, z, cx, cy, cz):
         dir_x, dir_y, dir_z = cx - x, cy - y, cz - z
@@ -256,7 +223,7 @@ class MoveOnSlidingSphere(Node):
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'sphere_center'
-        marker.id = 999
+        marker.id = 999  # IDを固定して上書きする
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = center[0]
