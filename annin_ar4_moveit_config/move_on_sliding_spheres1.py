@@ -11,12 +11,13 @@ from sensor_msgs.msg import JointState
 from moveit_msgs.srv import GetPositionIK, GetCartesianPath
 from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker, MarkerArray
-from trajectory_msgs.msg import JointTrajectory
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 
 from tf2_ros import TransformListener, Buffer
 from rclpy.duration import Duration
 from rclpy.time import Time
+
 
 class MoveOnSlidingSphere(Node):
     def __init__(self):
@@ -55,10 +56,15 @@ class MoveOnSlidingSphere(Node):
         for _, center in self.arc_points_and_centers:
             self.publish_sphere_marker(center)
 
+        self.wait_for_joint_state()
         self.plan_and_execute_cartesian_path()
 
     def joint_state_callback(self, msg):
         self.current_joint_state = msg
+
+    def wait_for_joint_state(self):
+        while not self.current_joint_state.name:
+            rclpy.spin_once(self)
 
     def generate_intersection_points_with_dynamic_slide(self):
         points = []
@@ -169,7 +175,19 @@ class MoveOnSlidingSphere(Node):
             self.get_logger().error('❌ Cartesian path planning failed.')
             return
 
-        trajectory = future.result().solution
+        raw_traj = future.result().solution.joint_trajectory
+
+        trajectory = JointTrajectory()
+        trajectory.joint_names = raw_traj.joint_names
+        trajectory.points = []
+        for pt in raw_traj.points:
+            point = JointTrajectoryPoint()
+            point.positions = pt.positions
+            point.velocities = pt.velocities
+            point.accelerations = pt.accelerations
+            point.effort = pt.effort
+            point.time_from_start = pt.time_from_start
+            trajectory.points.append(point)
 
         goal_msg = FollowJointTrajectory.Goal()
         goal_msg.trajectory = trajectory
@@ -233,10 +251,12 @@ class MoveOnSlidingSphere(Node):
         marker_array.markers.append(ee_line)
         self.marker_array_pub.publish(marker_array)
 
+
 def main(args=None):
     rclpy.init(args=args)
     node = MoveOnSlidingSphere()
     rclpy.spin(node)
+
 
 if __name__ == '__main__':
     main()
