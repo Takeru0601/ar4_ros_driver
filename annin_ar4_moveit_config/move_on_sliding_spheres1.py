@@ -180,14 +180,13 @@ class MoveOnSlidingSphere(Node):
         trajectory = JointTrajectory()
         trajectory.joint_names = raw_traj.joint_names
         trajectory.points = []
-        dt = 0.3
-        for i, pt in enumerate(raw_traj.points):
+        for pt in raw_traj.points:
             point = JointTrajectoryPoint()
             point.positions = pt.positions
             point.velocities = pt.velocities
             point.accelerations = pt.accelerations
             point.effort = pt.effort
-            point.time_from_start = rclpy.time.Duration(seconds=dt * i).to_msg()
+            point.time_from_start = pt.time_from_start
             trajectory.points.append(point)
 
         goal_msg = FollowJointTrajectory.Goal()
@@ -228,8 +227,9 @@ class MoveOnSlidingSphere(Node):
 
     def update_ee_marker(self):
         try:
+            now = self.get_clock().now().to_msg()
             trans = self.tf_buffer.lookup_transform(
-                'base_link', 'ee_link', Time(), timeout=Duration(seconds=0.5))
+                'base_link', 'ee_link', now, timeout=Duration(seconds=0.5))
             pos = trans.transform.translation
             point = Point(x=pos.x, y=pos.y, z=pos.z)
             self.ee_traj.append(point)
@@ -257,12 +257,13 @@ def main(args=None):
     rclpy.init(args=args)
     node = MoveOnSlidingSphere()
     try:
-        rclpy.spin(node)  # ノードを終了せずRViz更新を継続
+        rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
