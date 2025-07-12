@@ -18,7 +18,6 @@ from tf2_ros import TransformListener, Buffer
 from rclpy.duration import Duration
 from rclpy.time import Time
 
-
 class MoveOnSlidingSphere(Node):
     def __init__(self):
         super().__init__('move_on_sliding_sphere')
@@ -38,6 +37,7 @@ class MoveOnSlidingSphere(Node):
         self.radius = 0.2
         self.y_planes = [-0.45, -0.43, -0.41]
         self.ee_traj = []
+        self.marker_id_counter = 0
 
         self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
         while not self.ik_client.wait_for_service(timeout_sec=1.0):
@@ -90,7 +90,6 @@ class MoveOnSlidingSphere(Node):
                 z = cz + circle_radius * math.sin(theta)
 
                 pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
-                pose.header.stamp = self.get_clock().now().to_msg()
 
                 if self.quick_feasibility_check(pose):
                     points.append((pose, [cx, cy, cz]))
@@ -180,20 +179,22 @@ class MoveOnSlidingSphere(Node):
         trajectory = JointTrajectory()
         trajectory.joint_names = raw_traj.joint_names
         trajectory.points = []
-        for pt in raw_traj.points:
+        dt = 0.3
+        for i, pt in enumerate(raw_traj.points):
             point = JointTrajectoryPoint()
             point.positions = pt.positions
             point.velocities = pt.velocities
             point.accelerations = pt.accelerations
             point.effort = pt.effort
-            point.time_from_start = pt.time_from_start
+            point.time_from_start = rclpy.duration.Duration(seconds=dt * i).to_msg()
             trajectory.points.append(point)
 
         goal_msg = FollowJointTrajectory.Goal()
         goal_msg.trajectory = trajectory
 
         send_future = self.traj_client.send_goal_async(goal_msg)
-        rclpy.spin_until_future_complete(self, send_future)
+        while not send_future.done():
+            rclpy.spin_once(self)
 
         goal_handle = send_future.result()
         if not goal_handle.accepted:
@@ -202,7 +203,8 @@ class MoveOnSlidingSphere(Node):
 
         self.get_logger().info('▶️ Cartesian trajectory sent.')
         result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future)
+        while not result_future.done():
+            rclpy.spin_once(self)
         self.get_logger().info(f'🌟 Trajectory result received.')
 
     def publish_sphere_marker(self, center):
@@ -210,7 +212,8 @@ class MoveOnSlidingSphere(Node):
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'sphere_center'
-        marker.id = 999
+        marker.id = self.marker_id_counter
+        self.marker_id_counter += 1
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = center[0]
@@ -227,9 +230,8 @@ class MoveOnSlidingSphere(Node):
 
     def update_ee_marker(self):
         try:
-            now = self.get_clock().now().to_msg()
             trans = self.tf_buffer.lookup_transform(
-                'base_link', 'ee_link', now, timeout=Duration(seconds=0.5))
+                'base_link', 'ee_link', Time(), timeout=Duration(seconds=0.5))
             pos = trans.transform.translation
             point = Point(x=pos.x, y=pos.y, z=pos.z)
             self.ee_traj.append(point)
@@ -252,7 +254,6 @@ class MoveOnSlidingSphere(Node):
         marker_array.markers.append(ee_line)
         self.marker_array_pub.publish(marker_array)
 
-
 def main(args=None):
     rclpy.init(args=args)
     node = MoveOnSlidingSphere()
@@ -263,7 +264,6 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
