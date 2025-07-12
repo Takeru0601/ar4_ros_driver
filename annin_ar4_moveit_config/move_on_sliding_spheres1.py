@@ -180,7 +180,7 @@ class MoveOnSlidingSphere(Node):
         trajectory = JointTrajectory()
         trajectory.joint_names = raw_traj.joint_names
         trajectory.points = []
-        dt = 0.1
+        dt = 0.3
         for i, pt in enumerate(raw_traj.points):
             point = JointTrajectoryPoint()
             point.positions = pt.positions
