@@ -39,23 +39,24 @@ class MoveOnSlidingSphere(Node):
         self.marker_pub = self.create_publisher(Marker, "/visualization_marker", 10)
         self.marker_array_pub = self.create_publisher(MarkerArray, "/visualization_marker_array", 10)
 
-        self.ee_traj = []                                      # EE 轨跡保存
+        self.ee_traj = []  # EE 轨跡保存
         self.create_timer(0.2, self.update_ee_marker)
 
         self.current_joint_state = JointState()
         self.create_subscription(JointState, "/joint_states", self.joint_state_cb, 10)
 
-        self.tf_buffer = Buffer(); self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # ───────────── parameters ─────────────
-        self.center_base = [0.0, -0.40, 0.1]      # 球中心（基準）
-        self.radius = 0.15                         # 球半径 [m]
-        self.y_planes = [-0.40, -0.39, -0.38,-0.25]     # 断面 y 値
-        self.theta_step_deg = 3.0                  # θ 刻み [deg]
-        self.max_slide = 0.15                      # スライド量 [m] (球半径と同じ値がよい)
+        self.center_base = [0.0, -0.40, 0.1]  # 球中心（基準）
+        self.radius = 0.15  # 球半径 [m]
+        self.y_planes = [-0.40, -0.39, -0.38, -0.25]  # 断面 y 値
+        self.theta_step_deg = 3.0  # θ 刻み [deg]
+        self.max_slide = 0.15  # スライド量 [m] (球半径と同じ値がよい)
 
         # ───────────── service / action clients ─────────────
-        self.ik_cli   = self.wait_srv(GetPositionIK, "/compute_ik")
+        self.ik_cli = self.wait_srv(GetPositionIK, "/compute_ik")
         self.cart_cli = self.wait_srv(GetCartesianPath, "/compute_cartesian_path")
         self.traj_cli = ActionClient(self, FollowJointTrajectory,
                                      "/joint_trajectory_controller/follow_joint_trajectory")
@@ -107,15 +108,15 @@ class MoveOnSlidingSphere(Node):
         return poses
 
     def compute_pose_plane(self, x, y, z, cx):
-        dir_x, dir_z = cx - x, self.center_base[2] - z   # dir_y = 0
+        dir_x, dir_z = cx - x, self.center_base[2] - z
         norm = math.hypot(dir_x, dir_z)
         dir_x, dir_z = dir_x / norm, dir_z / norm
         up = [0, 1, 0]
-        x_axis = [ up[1]*dir_z, -up[0]*dir_z, up[0]*dir_x ]
-        x_axis = [v / math.sqrt(sum(k*k for k in x_axis)) for v in x_axis]
-        y_axis = [ -dir_z * x_axis[1], dir_z * x_axis[0] - dir_x * x_axis[2], dir_x * x_axis[1] ]
+        x_axis = [up[1] * dir_z, -up[0] * dir_z, up[0] * dir_x]
+        x_axis = [v / math.sqrt(sum(k * k for k in x_axis)) for v in x_axis]
+        y_axis = [-dir_z * x_axis[1], dir_z * x_axis[0] - dir_x * x_axis[2], dir_x * x_axis[1]]
         rot = [[x_axis[0], y_axis[0], dir_x, 0],
-               [x_axis[1], y_axis[1], 0.0,   0],
+               [x_axis[1], y_axis[1], 0.0, 0],
                [x_axis[2], y_axis[2], dir_z, 0],
                [0, 0, 0, 1]]
         q = tf_transformations.quaternion_from_matrix(rot)
@@ -143,7 +144,7 @@ class MoveOnSlidingSphere(Node):
             rclpy.shutdown(); return
 
         pose, _ = self.waypoints[self.curr_index]
-        self.get_logger().info(f"▶️ Segment {self.curr_index+1}/{len(self.waypoints)}")
+        self.get_logger().info(f"▶️ Segment {self.curr_index + 1}/{len(self.waypoints)}")
 
         cart_req = GetCartesianPath.Request()
         cart_req.header.frame_id = "base_link"
@@ -162,7 +163,6 @@ class MoveOnSlidingSphere(Node):
             rclpy.shutdown(); return
 
         traj = res.solution.joint_trajectory
-        # simple time parameterization
         dt = 0.25
         for i, pt in enumerate(traj.points):
             pt.time_from_start = Duration(seconds=dt * i).to_msg()
@@ -185,7 +185,8 @@ class MoveOnSlidingSphere(Node):
     # ========================================= markers & traces ==========
     def publish_sphere_marker(self, center):
         m = Marker()
-        m.header.frame_id = "base_link"; m.header.stamp = self.get_clock().now().to_msg()
+        m.header.frame_id = "base_link"
+        m.header.stamp = self.get_clock().now().to_msg()
         m.ns = "sphere"; m.id = 1000 + self.curr_index
         m.type, m.action = Marker.SPHERE, Marker.ADD
         m.pose.position.x, m.pose.position.y, m.pose.position.z = center
@@ -193,14 +194,15 @@ class MoveOnSlidingSphere(Node):
         m.color.r, m.color.g, m.color.b, m.color.a = 0.2, 0.5, 1.0, 0.4
         self.marker_pub.publish(m)
 
-        def update_ee_marker(self):
+    def update_ee_marker(self):
         try:
             trans = self.tf_buffer.lookup_transform(
                 "base_link", "ee_link", Time(), timeout=Duration(seconds=0.2))
             p = trans.transform.translation
             self.ee_traj.append(Point(x=p.x, y=p.y, z=p.z))
             line = Marker()
-            line.header.frame_id = "base_link"; line.header.stamp = self.get_clock().now().to_msg()
+            line.header.frame_id = "base_link"
+            line.header.stamp = self.get_clock().now().to_msg()
             line.ns = "ee_path"; line.id = 0
             line.type, line.action = Marker.LINE_STRIP, Marker.ADD
             line.scale.x = 0.005; line.color.g, line.color.a = 1.0, 1.0
@@ -218,7 +220,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node(); rclpy.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":
