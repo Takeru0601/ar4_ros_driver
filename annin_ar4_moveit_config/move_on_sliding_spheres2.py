@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-MoveOnSlidingSphere – 逐次ループ版（面内制約付き / 完全実行可）
---------------------------------------------------------------
-* EE‑Z 軸は常に塗装面（y = const.）内に投影（dir_y = 0）
-* マーカーで球中心・EE 轨跡を可視化
-"""
+
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient as TrajectoryActionClient
@@ -37,10 +32,10 @@ class MoveOnSlidingSphere(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.center_base_x = 0.0
-        self.center_base_y = -0.40
-        self.center_base_z = 0.10
-        self.radius = 0.15
-        self.y_planes = [-0.40, -0.39, -0.38,-0.25]
+        self.center_base_y = -0.45
+        self.center_base_z = 0.0
+        self.radius = 0.2
+        self.y_planes = [-0.45, -0.43, -0.41]
         self.ee_traj = []
         self.marker_id_counter = 0
 
