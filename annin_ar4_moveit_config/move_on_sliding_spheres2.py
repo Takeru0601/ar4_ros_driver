@@ -53,8 +53,9 @@ class MoveOnSlidingSphere(Node):
         self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
         self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
 
-        for _, center in self.arc_points_and_centers:
-            self.publish_sphere_marker(center)
+        self.center_markers = [center for _, center in self.arc_points_and_centers]
+        self.current_index = 0
+        self.sphere_timer = self.create_timer(0.3, self.update_sphere_marker)
 
         self.wait_for_joint_state()
         self.plan_and_execute_cartesian_path()
@@ -214,8 +215,7 @@ class MoveOnSlidingSphere(Node):
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'sphere_center'
-        marker.id = self.marker_id_counter
-        self.marker_id_counter += 1
+        marker.id = 0
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = center[0]
@@ -229,6 +229,11 @@ class MoveOnSlidingSphere(Node):
         marker.color.b = 1.0
         marker.color.a = 0.4
         self.marker_pub.publish(marker)
+
+    def update_sphere_marker(self):
+        if self.current_index < len(self.center_markers):
+            self.publish_sphere_marker(self.center_markers[self.current_index])
+            self.current_index += 1
 
     def update_ee_marker(self):
         try:
