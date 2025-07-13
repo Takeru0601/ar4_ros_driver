@@ -53,9 +53,8 @@ class MoveOnSlidingSphere(Node):
         self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
         self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
 
-        self.center_markers = [center for _, center in self.arc_points_and_centers]
-        self.current_index = 0
-        self.sphere_timer = self.create_timer(0.3, self.update_sphere_marker)
+        for _, center in self.arc_points_and_centers:
+            self.publish_sphere_marker(center)
 
         self.wait_for_joint_state()
         self.plan_and_execute_cartesian_path()
@@ -90,7 +89,7 @@ class MoveOnSlidingSphere(Node):
                 x = cx + circle_radius * math.cos(theta)
                 z = cz + circle_radius * math.sin(theta)
 
-                pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
+                pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy)
 
                 if self.quick_feasibility_check(pose):
                     points.append((pose, [cx, cy, cz]))
@@ -98,24 +97,23 @@ class MoveOnSlidingSphere(Node):
                     self.get_logger().warn(f'❌ No IK at y={y:.3f}, θ={theta_deg:.1f}')
         return points
 
-    def compute_pose_pointing_to_center(self, x, y, z, cx, cy, cz):
+    def compute_pose_pointing_to_center(self, x, y, z, cx, cy):
         dir_x = cx - x
         dir_y = cy - y
-        norm_xy = math.hypot(dir_x, dir_y)
-        if norm_xy < 1e-6:
-            self.get_logger().warn("⚠️ XY方向の法線ベクトルの長さが小さすぎます")
+        dir_z = 0.0  # Z軸方向の変化を排除
+        norm = math.hypot(dir_x, dir_y)
+        if norm < 1e-6:
             dir_x, dir_y = 1.0, 0.0
-            norm_xy = 1.0
-        dir_x /= norm_xy
-        dir_y /= norm_xy
-        dir_z = 0.0
+            norm = 1.0
+        dir_x /= norm
+        dir_y /= norm
 
         z_axis = [dir_x, dir_y, dir_z]
-        tmp_y = [0, 0, 1]
+        tmp_y = [0, 0, 1]  # 常にZ軸上向き
         x_axis = [
             tmp_y[1]*z_axis[2] - tmp_y[2]*z_axis[1],
             tmp_y[2]*z_axis[0] - tmp_y[0]*z_axis[2],
-            tmp_y[0]*z_axis[1] - tmp_y[1]*z_axis[0],
+            tmp_y[0]*z_axis[1] - tmp_y[1]*z_axis[0]
         ]
         x_norm = math.sqrt(sum(v**2 for v in x_axis))
         x_axis = [v / x_norm for v in x_axis]
@@ -123,7 +121,7 @@ class MoveOnSlidingSphere(Node):
         y_axis = [
             z_axis[1]*x_axis[2] - z_axis[2]*x_axis[1],
             z_axis[2]*x_axis[0] - z_axis[0]*x_axis[2],
-            z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0],
+            z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0]
         ]
 
         rot_matrix = [
@@ -215,7 +213,8 @@ class MoveOnSlidingSphere(Node):
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'sphere_center'
-        marker.id = 0
+        marker.id = self.marker_id_counter
+        self.marker_id_counter += 1
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = center[0]
@@ -229,11 +228,6 @@ class MoveOnSlidingSphere(Node):
         marker.color.b = 1.0
         marker.color.a = 0.4
         self.marker_pub.publish(marker)
-
-    def update_sphere_marker(self):
-        if self.current_index < len(self.center_markers):
-            self.publish_sphere_marker(self.center_markers[self.current_index])
-            self.current_index += 1
 
     def update_ee_marker(self):
         try:
