@@ -89,7 +89,7 @@ class MoveOnSlidingSphere(Node):
                 x = cx + circle_radius * math.cos(theta)
                 z = cz + circle_radius * math.sin(theta)
 
-                pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy)
+                pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
 
                 if self.quick_feasibility_check(pose):
                     points.append((pose, [cx, cy, cz]))
@@ -97,40 +97,39 @@ class MoveOnSlidingSphere(Node):
                     self.get_logger().warn(f'❌ No IK at y={y:.3f}, θ={theta_deg:.1f}')
         return points
 
-    def compute_pose_pointing_to_center(self, x, y, z, cx, cy):
-        dir_x = cx - x
-        dir_y = cy - y
-        dir_z = 0.0  # Z軸方向の変化を排除
-        norm = math.hypot(dir_x, dir_y)
-        if norm < 1e-6:
-            dir_x, dir_y = 1.0, 0.0
-            norm = 1.0
+    def compute_pose_pointing_to_center(self, x, y, z, cx, cy, cz):
+        dir_x, dir_y, dir_z = cx - x, cy - y, cz - z
+        norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
         dir_x /= norm
         dir_y /= norm
+        dir_z /= norm
 
-        z_axis = [dir_x, dir_y, dir_z]
-        tmp_y = [0, 0, 1]  # 常にZ軸上向き
+        up = [0, 1, 0]
         x_axis = [
-            tmp_y[1]*z_axis[2] - tmp_y[2]*z_axis[1],
-            tmp_y[2]*z_axis[0] - tmp_y[0]*z_axis[2],
-            tmp_y[0]*z_axis[1] - tmp_y[1]*z_axis[0]
+            up[1]*dir_z - up[2]*dir_y,
+            up[2]*dir_x - up[0]*dir_z,
+            up[0]*dir_y - up[1]*dir_x,
         ]
         x_norm = math.sqrt(sum(v**2 for v in x_axis))
         x_axis = [v / x_norm for v in x_axis]
 
-        y_axis = [
-            z_axis[1]*x_axis[2] - z_axis[2]*x_axis[1],
-            z_axis[2]*x_axis[0] - z_axis[0]*x_axis[2],
-            z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0]
+        new_y = [
+            dir_y*x_axis[2] - dir_z*x_axis[1],
+            dir_z*x_axis[0] - dir_x*x_axis[2],
+            dir_x*x_axis[1] - dir_y*x_axis[0],
         ]
 
         rot_matrix = [
-            [x_axis[0], y_axis[0], z_axis[0], 0],
-            [x_axis[1], y_axis[1], z_axis[1], 0],
-            [x_axis[2], y_axis[2], z_axis[2], 0],
-            [0, 0, 0, 1]
+            [x_axis[0], new_y[0], dir_x],
+            [x_axis[1], new_y[1], dir_y],
+            [x_axis[2], new_y[2], dir_z],
         ]
-        quat = tf_transformations.quaternion_from_matrix(rot_matrix)
+        quat = tf_transformations.quaternion_from_matrix([
+            [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
+            [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
+            [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
+            [0, 0, 0, 1]
+        ])
 
         pose = PoseStamped()
         pose.header.stamp = self.get_clock().now().to_msg()
