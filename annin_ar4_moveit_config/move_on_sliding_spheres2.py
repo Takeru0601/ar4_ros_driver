@@ -1,209 +1,265 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 MoveOnSlidingSphere – 逐次ループ版（面内制約付き / 完全実行可）
 --------------------------------------------------------------
 * EE‑Z 軸は常に塗装面（y = const.）内に投影（dir_y = 0）
-* θ = 3° 刻みスネーク走査 → 法線角度は単調変化
-* 各ウェイポイントを逐次 CartesianPath + FollowJointTrajectory で実行
 * マーカーで球中心・EE 轨跡を可視化
 """
-
-import math
 import rclpy
 from rclpy.node import Node
-from rclpy.action import ActionClient
+from rclpy.action import ActionClient as TrajectoryActionClient
+import math
 import tf_transformations
 
 from geometry_msgs.msg import PoseStamped, Point
 from sensor_msgs.msg import JointState
-
 from moveit_msgs.srv import GetPositionIK, GetCartesianPath
-from control_msgs.action import FollowJointTrajectory
-from trajectory_msgs.msg import JointTrajectory
-
-from tf2_ros import Buffer, TransformListener
-from rclpy.time import Time
-from rclpy.duration import Duration
-
+from shape_msgs.msg import SolidPrimitive
 from visualization_msgs.msg import Marker, MarkerArray
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from control_msgs.action import FollowJointTrajectory
 
+from tf2_ros import TransformListener, Buffer
+from rclpy.duration import Duration
+from rclpy.time import Time
 
 class MoveOnSlidingSphere(Node):
     def __init__(self):
-        super().__init__("move_on_sliding_sphere")
-
-        self.marker_pub = self.create_publisher(Marker, "/visualization_marker", 10)
-        self.marker_array_pub = self.create_publisher(MarkerArray, "/visualization_marker_array", 10)
-
-        self.ee_traj = []
-        self.create_timer(0.2, self.update_ee_marker)
+        super().__init__('move_on_sliding_sphere')
+        self.marker_pub = self.create_publisher(Marker, '/visualization_marker', 10)
+        self.marker_array_pub = self.create_publisher(MarkerArray, '/visualization_marker_array', 10)
+        self.timer = self.create_timer(0.2, self.update_ee_marker)
 
         self.current_joint_state = JointState()
-        self.create_subscription(JointState, "/joint_states", self.joint_state_cb, 10)
+        self.joint_state_sub = self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self.center_base = [0.0, -0.40, 0.1]
-        self.radius = 0.15
-        self.y_planes = [-0.40, -0.39, -0.38, -0.25]
-        self.theta_step_deg = 3.0
-        self.max_slide = 0.15
+        self.center_base_x = 0.0
+        self.center_base_y = -0.45
+        self.center_base_z = 0.0
+        self.radius = 0.2
+        self.y_planes = [-0.45, -0.43, -0.41]
+        self.ee_traj = []
+        self.marker_id_counter = 0
 
-        self.ik_cli = self.wait_srv(GetPositionIK, "/compute_ik")
-        self.cart_cli = self.wait_srv(GetCartesianPath, "/compute_cartesian_path")
-        self.traj_cli = ActionClient(self, FollowJointTrajectory,
-                                     "/joint_trajectory_controller/follow_joint_trajectory")
+        self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
+        while not self.ik_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('Waiting for /compute_ik service...')
 
-        self.waypoints = self.build_waypoints()
-        self.get_logger().info(f"✅ {len(self.waypoints)} feasible poses")
-        for _, c in self.waypoints:
-            self.publish_sphere_marker(c)
+        self.cartesian_client = self.create_client(GetCartesianPath, '/compute_cartesian_path')
+        while not self.cartesian_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('Waiting for /compute_cartesian_path service...')
 
-        self.curr_index = 0
+        self.traj_client = TrajectoryActionClient(self, FollowJointTrajectory, '/follow_joint_trajectory')
+
+        self.get_logger().info('⏳ Generating feasible target points...')
+        self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
+        self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
+
+        for _, center in self.arc_points_and_centers:
+            self.publish_sphere_marker(center)
+
         self.wait_for_joint_state()
-        self.execute_next_segment()
+        self.plan_and_execute_cartesian_path()
 
-    def wait_srv(self, srv_type, name):
-        cli = self.create_client(srv_type, name)
-        while not cli.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(f"Waiting for {name} …")
-        return cli
-
-    def joint_state_cb(self, msg):
+    def joint_state_callback(self, msg):
         self.current_joint_state = msg
 
     def wait_for_joint_state(self):
         while not self.current_joint_state.name:
             rclpy.spin_once(self)
 
-    def build_waypoints(self):
-        poses = []
-        step = int(self.theta_step_deg)
-        for idx, y in enumerate(self.y_planes):
-            dy = y - self.center_base[1]
+    def generate_intersection_points_with_dynamic_slide(self):
+        points = []
+        steps = 18
+        max_slide = 0.2
+
+        for plane_idx, y in enumerate(self.y_planes):
+            dy = y - self.center_base_y
             if abs(dy) > self.radius:
                 continue
-            circle_r = math.sqrt(self.radius ** 2 - dy ** 2)
-            thetas = range(0, 181, step) if idx % 2 == 0 else range(180, -1, -step)
-            for t_deg in thetas:
-                theta = math.radians(t_deg)
-                slide = -self.max_slide * (1 - math.cos(theta)) / 2
-                cx = self.center_base[0] + slide
-                x = cx + circle_r * math.cos(theta)
-                z = self.center_base[2] + circle_r * math.sin(theta)
-                pose = self.compute_pose_plane(x, y, z, cx)
-                if pose and self.ik_ok(pose):
-                    poses.append((pose, [cx, self.center_base[1], self.center_base[2]]))
-        return poses
+            circle_radius = math.sqrt(self.radius**2 - dy**2)
 
-    def compute_pose_plane(self, x, y, z, cx):
-        dir_x, dir_z = cx - x, self.center_base[2] - z
-        norm = math.hypot(dir_x, dir_z)
-        if norm < 1e-6:
-            self.get_logger().warn("⚠️ Skipped zero direction vector")
-            return None
-        dir_x, dir_z = dir_x / norm, dir_z / norm
-        up = [0, 1, 0]
-        x_axis = [up[1]*dir_z, -up[0]*dir_z, up[0]*dir_x]
-        axis_norm = math.sqrt(sum(k*k for k in x_axis))
-        if axis_norm < 1e-6:
-            self.get_logger().warn("⚠️ x_axis norm too small")
-            return None
-        x_axis = [v / axis_norm for v in x_axis]
-        y_axis = [-dir_z * x_axis[1], dir_z * x_axis[0] - dir_x * x_axis[2], dir_x * x_axis[1]]
-        rot = [[x_axis[0], y_axis[0], dir_x, 0],
-               [x_axis[1], y_axis[1], 0.0, 0],
-               [x_axis[2], y_axis[2], dir_z, 0],
-               [0, 0, 0, 1]]
-        q = tf_transformations.quaternion_from_matrix(rot)
-        ps = PoseStamped()
-        ps.header.stamp = self.get_clock().now().to_msg()
-        ps.header.frame_id = "base_link"
-        ps.pose.position.x, ps.pose.position.y, ps.pose.position.z = x, y, z
-        ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z, ps.pose.orientation.w = q
-        return ps
+            for i in range(steps + 1):
+                theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
+                theta = math.radians(theta_deg)
 
-    def ik_ok(self, pose):
-        req = GetPositionIK.Request()
-        req.ik_request.group_name = "ar_manipulator"
-        req.ik_request.pose_stamped = pose
-        req.ik_request.ik_link_name = "ee_link"
-        req.ik_request.timeout.sec = 1
-        fut = self.ik_cli.call_async(req)
-        rclpy.spin_until_future_complete(self, fut, timeout_sec=2.0)
-        return fut.result() and fut.result().error_code.val == 1
+                slide_bias = -max_slide * math.cos(theta)
+                cx = self.center_base_x + slide_bias
+                cy = self.center_base_y
+                cz = self.center_base_z
 
-    def execute_next_segment(self):
-        if self.curr_index >= len(self.waypoints):
-            self.get_logger().info("🎉 Finished all waypoints")
-            rclpy.shutdown(); return
+                x = cx + circle_radius * math.cos(theta)
+                z = cz + circle_radius * math.sin(theta)
 
-        pose, _ = self.waypoints[self.curr_index]
-        self.get_logger().info(f"▶️ Segment {self.curr_index+1}/{len(self.waypoints)}")
+                pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
 
-        cart_req = GetCartesianPath.Request()
-        cart_req.header.frame_id = "base_link"
-        cart_req.group_name = "ar_manipulator"
-        cart_req.waypoints = [pose.pose]
-        cart_req.max_step = 0.005
-        cart_req.jump_threshold = 0.0
-        cart_req.avoid_collisions = True
-        cart_req.start_state.joint_state = self.current_joint_state
+                if self.quick_feasibility_check(pose):
+                    points.append((pose, [cx, cy, cz]))
+                else:
+                    self.get_logger().warn(f'❌ No IK at y={y:.3f}, θ={theta_deg:.1f}')
+        return points
 
-        cart_fut = self.cart_cli.call_async(cart_req)
-        rclpy.spin_until_future_complete(self, cart_fut, timeout_sec=5.0)
-        res = cart_fut.result()
-        if not res or res.error_code.val != 1 or res.fraction < 0.9:
-            self.get_logger().error("🚫 Cartesian path segment failed")
-            rclpy.shutdown(); return
+    def compute_pose_pointing_to_center(self, x, y, z, cx, cy, cz):
+        dir_x = cx - x
+        dir_y = cy - y
+        norm_xy = math.hypot(dir_x, dir_y)
+        if norm_xy < 1e-6:
+            self.get_logger().warn("⚠️ XY方向の法線ベクトルの長さが小さすぎます")
+            dir_x, dir_y = 1.0, 0.0
+            norm_xy = 1.0
+        dir_x /= norm_xy
+        dir_y /= norm_xy
+        dir_z = 0.0
 
-        traj = res.solution.joint_trajectory
-        dt = 0.25
-        for i, pt in enumerate(traj.points):
-            pt.time_from_start = Duration(seconds=dt * i).to_msg()
+        z_axis = [dir_x, dir_y, dir_z]
+        tmp_y = [0, 0, 1]
+        x_axis = [
+            tmp_y[1]*z_axis[2] - tmp_y[2]*z_axis[1],
+            tmp_y[2]*z_axis[0] - tmp_y[0]*z_axis[2],
+            tmp_y[0]*z_axis[1] - tmp_y[1]*z_axis[0],
+        ]
+        x_norm = math.sqrt(sum(v**2 for v in x_axis))
+        x_axis = [v / x_norm for v in x_axis]
 
-        goal = FollowJointTrajectory.Goal(); goal.trajectory = traj
-        self.traj_cli.wait_for_server()
-        send_fut = self.traj_cli.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, send_fut)
-        gh = send_fut.result()
-        if not gh or not gh.accepted:
-            self.get_logger().error("🚫 Trajectory goal rejected"); rclpy.shutdown(); return
+        y_axis = [
+            z_axis[1]*x_axis[2] - z_axis[2]*x_axis[1],
+            z_axis[2]*x_axis[0] - z_axis[0]*x_axis[2],
+            z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0],
+        ]
 
-        res_fut = gh.get_result_async()
-        rclpy.spin_until_future_complete(self, res_fut)
-        self.get_logger().info(f"🌟 segment result {res_fut.result().error_code}")
+        rot_matrix = [
+            [x_axis[0], y_axis[0], z_axis[0], 0],
+            [x_axis[1], y_axis[1], z_axis[1], 0],
+            [x_axis[2], y_axis[2], z_axis[2], 0],
+            [0, 0, 0, 1]
+        ]
+        quat = tf_transformations.quaternion_from_matrix(rot_matrix)
 
-        self.curr_index += 1
-        self.execute_next_segment()
+        pose = PoseStamped()
+        pose.header.stamp = self.get_clock().now().to_msg()
+        pose.header.frame_id = 'base_link'
+        pose.pose.position.x = x
+        pose.pose.position.y = y
+        pose.pose.position.z = z
+        pose.pose.orientation.x = quat[0]
+        pose.pose.orientation.y = quat[1]
+        pose.pose.orientation.z = quat[2]
+        pose.pose.orientation.w = quat[3]
+        return pose
+
+    def quick_feasibility_check(self, pose):
+        request = GetPositionIK.Request()
+        request.ik_request.group_name = 'ar_manipulator'
+        request.ik_request.pose_stamped = pose
+        request.ik_request.ik_link_name = 'ee_link'
+        request.ik_request.timeout.sec = 1
+
+        future = self.ik_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future)
+
+        return future.result() and future.result().error_code.val == 1
+
+    def plan_and_execute_cartesian_path(self):
+        waypoints = [pose for pose, _ in self.arc_points_and_centers]
+
+        request = GetCartesianPath.Request()
+        request.group_name = 'ar_manipulator'
+        request.header.frame_id = 'base_link'
+        request.waypoints = [p.pose for p in waypoints]
+        request.max_step = 0.01
+        request.jump_threshold = 0.0
+        request.avoid_collisions = True
+        request.start_state.joint_state = self.current_joint_state
+
+        future = self.cartesian_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future)
+
+        if not future.result() or future.result().error_code.val != 1:
+            self.get_logger().error('❌ Cartesian path planning failed.')
+            return
+
+        raw_traj = future.result().solution.joint_trajectory
+
+        trajectory = JointTrajectory()
+        trajectory.joint_names = raw_traj.joint_names
+        trajectory.points = []
+        dt = 0.3
+        for i, pt in enumerate(raw_traj.points):
+            point = JointTrajectoryPoint()
+            point.positions = pt.positions
+            point.velocities = pt.velocities
+            point.accelerations = pt.accelerations
+            point.effort = pt.effort
+            point.time_from_start = rclpy.duration.Duration(seconds=dt * i).to_msg()
+            trajectory.points.append(point)
+
+        goal_msg = FollowJointTrajectory.Goal()
+        goal_msg.trajectory = trajectory
+
+        send_future = self.traj_client.send_goal_async(goal_msg)
+        while not send_future.done():
+            rclpy.spin_once(self)
+
+        goal_handle = send_future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error('❌ Trajectory goal was rejected.')
+            return
+
+        self.get_logger().info('▶️ Cartesian trajectory sent.')
+        result_future = goal_handle.get_result_async()
+        while not result_future.done():
+            rclpy.spin_once(self)
+        self.get_logger().info(f'🌟 Trajectory result received.')
 
     def publish_sphere_marker(self, center):
-        m = Marker()
-        m.header.frame_id = "base_link"; m.header.stamp = self.get_clock().now().to_msg()
-        m.ns = "sphere"; m.id = 1000 + self.curr_index
-        m.type, m.action = Marker.SPHERE, Marker.ADD
-        m.pose.position.x, m.pose.position.y, m.pose.position.z = center
-        m.scale.x = m.scale.y = m.scale.z = self.radius * 2
-        m.color.r, m.color.g, m.color.b, m.color.a = 0.2, 0.5, 1.0, 0.4
-        self.marker_pub.publish(m)
+        marker = Marker()
+        marker.header.frame_id = 'base_link'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'sphere_center'
+        marker.id = self.marker_id_counter
+        self.marker_id_counter += 1
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = center[0]
+        marker.pose.position.y = center[1]
+        marker.pose.position.z = center[2]
+        marker.scale.x = self.radius * 2
+        marker.scale.y = self.radius * 2
+        marker.scale.z = self.radius * 2
+        marker.color.r = 0.2
+        marker.color.g = 0.5
+        marker.color.b = 1.0
+        marker.color.a = 0.4
+        self.marker_pub.publish(marker)
 
     def update_ee_marker(self):
         try:
             trans = self.tf_buffer.lookup_transform(
-                "base_link", "ee_link", Time(), timeout=Duration(seconds=0.2))
-            p = trans.transform.translation
-            self.ee_traj.append(Point(x=p.x, y=p.y, z=p.z))
-            line = Marker()
-            line.header.frame_id = "base_link"; line.header.stamp = self.get_clock().now().to_msg()
-            line.ns = "ee_path"; line.id = 0
-            line.type, line.action = Marker.LINE_STRIP, Marker.ADD
-            line.scale.x = 0.005; line.color.g, line.color.a = 1.0, 1.0
-            line.points = self.ee_traj
-            self.marker_array_pub.publish(MarkerArray(markers=[line]))
-        except Exception:
-            pass
+                'base_link', 'ee_link', Time(), timeout=Duration(seconds=0.5))
+            pos = trans.transform.translation
+            point = Point(x=pos.x, y=pos.y, z=pos.z)
+            self.ee_traj.append(point)
+            self.publish_trajectories()
+        except Exception as e:
+            self.get_logger().warn(f'⚠️ TF lookup failed: {e}')
+
+    def publish_trajectories(self):
+        marker_array = MarkerArray()
+        ee_line = Marker()
+        ee_line.header.frame_id = 'base_link'
+        ee_line.ns = 'ee_trajectory'
+        ee_line.id = 0
+        ee_line.type = Marker.LINE_STRIP
+        ee_line.action = Marker.ADD
+        ee_line.scale.x = 0.005
+        ee_line.color.g = 1.0
+        ee_line.color.a = 1.0
+        ee_line.points = self.ee_traj
+        marker_array.markers.append(ee_line)
+        self.marker_array_pub.publish(marker_array)
 
 def main(args=None):
     rclpy.init(args=args)
@@ -213,7 +269,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node(); rclpy.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
