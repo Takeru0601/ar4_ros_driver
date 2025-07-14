@@ -5,6 +5,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 import math
 import tf_transformations
+import numpy as np
 
 from geometry_msgs.msg import PoseStamped, Point
 from sensor_msgs.msg import JointState
@@ -44,14 +45,14 @@ class MoveOnSlidingSphere(Node):
         while not self.ik_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for /compute_ik service...')
 
-        self.get_logger().info('⏳ Generating feasible target points...')
+        self.get_logger().info('Generating feasible target points...')
         self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
-        self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
+        self.get_logger().info(f'{len(self.arc_points_and_centers)} feasible points found.')
 
         self.current_index = 0
-        self.get_logger().info('⏳ Waiting for MoveGroup action server...')
+        self.get_logger().info('Waiting for MoveGroup action server...')
         self._action_client.wait_for_server()
-        self.get_logger().info('✅ MoveGroup action server connected.')
+        self.get_logger().info('MoveGroup action server connected.')
         self.send_next_goal()
 
     def joint_state_callback(self, msg):
@@ -72,7 +73,7 @@ class MoveOnSlidingSphere(Node):
                 theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
                 theta = math.radians(theta_deg)
 
-                slide_bias = -max_slide * math.cos(theta)  # 軽く反対方向に変更
+                slide_bias = -max_slide * math.cos(theta)
                 cx = self.center_base_x + slide_bias
                 cy = self.center_base_y
                 cz = self.center_base_z
@@ -80,48 +81,44 @@ class MoveOnSlidingSphere(Node):
                 x = cx + circle_radius * math.cos(theta)
                 z = cz + circle_radius * math.sin(theta)
 
-                pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
+                pose = self.compute_pose_normal_to_sphere(x, y, z, cx, cy, cz)
                 pose.header.stamp = self.get_clock().now().to_msg()
 
                 if self.quick_feasibility_check(pose):
                     points.append((pose, [cx, cy, cz]))
                 else:
-                    self.get_logger().warn(f'❌ No IK at y={y:.3f}, θ={theta_deg:.1f}')
+                    self.get_logger().warn(f'No IK at y={y:.3f}, theta={theta_deg:.1f}')
         return points
 
-    def compute_pose_pointing_to_center(self, x, y, z, cx, cy, cz):
-        dir_x, dir_y, dir_z = cx - x, cy - y, cz - z
-        norm = math.sqrt(dir_x**2 + dir_y**2 + dir_z**2)
-        dir_x /= norm
-        dir_y /= norm
-        dir_z /= norm
+    def compute_pose_normal_to_sphere(self, x, y, z, cx, cy, cz):
+        nx, ny, nz = x - cx, y - cy, z - cz
+        norm = math.sqrt(nx**2 + ny**2 + nz**2)
+        nx, ny, nz = nx / norm, ny / norm, nz / norm
+        z_axis = [nx, ny, nz]
 
-        up = [0, 1, 0]
+        world_up = [0.0, 1.0, 0.0] if abs(ny) < 0.95 else [1.0, 0.0, 0.0]
+
         x_axis = [
-            up[1]*dir_z - up[2]*dir_y,
-            up[2]*dir_x - up[0]*dir_z,
-            up[0]*dir_y - up[1]*dir_x,
+            world_up[1]*z_axis[2] - world_up[2]*z_axis[1],
+            world_up[2]*z_axis[0] - world_up[0]*z_axis[2],
+            world_up[0]*z_axis[1] - world_up[1]*z_axis[0]
         ]
         x_norm = math.sqrt(sum(v**2 for v in x_axis))
         x_axis = [v / x_norm for v in x_axis]
 
-        new_y = [
-            dir_y*x_axis[2] - dir_z*x_axis[1],
-            dir_z*x_axis[0] - dir_x*x_axis[2],
-            dir_x*x_axis[1] - dir_y*x_axis[0],
+        y_axis = [
+            z_axis[1]*x_axis[2] - z_axis[2]*x_axis[1],
+            z_axis[2]*x_axis[0] - z_axis[0]*x_axis[2],
+            z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0]
         ]
 
         rot_matrix = [
-            [x_axis[0], new_y[0], dir_x],
-            [x_axis[1], new_y[1], dir_y],
-            [x_axis[2], new_y[2], dir_z],
-        ]
-        quat = tf_transformations.quaternion_from_matrix([
-            [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
-            [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
-            [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
+            [x_axis[0], y_axis[0], z_axis[0], 0],
+            [x_axis[1], y_axis[1], z_axis[1], 0],
+            [x_axis[2], y_axis[2], z_axis[2], 0],
             [0, 0, 0, 1]
-        ])
+        ]
+        quat = tf_transformations.quaternion_from_matrix(rot_matrix)
 
         pose = PoseStamped()
         pose.header.stamp = self.get_clock().now().to_msg()
@@ -149,7 +146,7 @@ class MoveOnSlidingSphere(Node):
 
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points_and_centers):
-            self.get_logger().info('🎉 All feasible points executed.')
+            self.get_logger().info('All feasible points executed.')
             rclpy.shutdown()
             return
 
@@ -194,16 +191,16 @@ class MoveOnSlidingSphere(Node):
     def goal_response_callback(self, future):
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error('❌ Goal rejected')
+            self.get_logger().error('Goal rejected')
             rclpy.shutdown()
             return
-        self.get_logger().info(f'▶️ Executing point {self.current_index + 1}/{len(self.arc_points_and_centers)}')
+        self.get_logger().info(f'Executing point {self.current_index + 1}/{len(self.arc_points_and_centers)}')
         self._get_result_future = goal_handle.get_result_async()
         self._get_result_future.add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
         result = future.result().result
-        self.get_logger().info(f'🌟 Result code: {result.error_code.val}')
+        self.get_logger().info(f'Result code: {result.error_code.val}')
         self.current_index += 1
         self.send_next_goal()
 
@@ -216,14 +213,14 @@ class MoveOnSlidingSphere(Node):
             self.ee_traj.append(point)
             self.publish_trajectories()
         except Exception as e:
-            self.get_logger().warn(f'⚠️ TF lookup failed: {e}')
+            self.get_logger().warn(f'TF lookup failed: {e}')
 
     def publish_sphere_marker(self, center):
         marker = Marker()
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'sphere_center'
-        marker.id = 999  # IDを固定して上書きする
+        marker.id = 999
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = center[0]
