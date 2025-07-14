@@ -5,7 +5,6 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 import math
 import tf_transformations
-import numpy as np
 
 from geometry_msgs.msg import PoseStamped, Point
 from sensor_msgs.msg import JointState
@@ -18,6 +17,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from tf2_ros import TransformListener, Buffer
 from rclpy.duration import Duration
 from rclpy.time import Time
+
 
 class MoveOnSlidingSphere(Node):
     def __init__(self):
@@ -45,14 +45,14 @@ class MoveOnSlidingSphere(Node):
         while not self.ik_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for /compute_ik service...')
 
-        self.get_logger().info('Generating feasible target points...')
+        self.get_logger().info('⏳ Generating feasible target points...')
         self.arc_points_and_centers = self.generate_intersection_points_with_dynamic_slide()
-        self.get_logger().info(f'{len(self.arc_points_and_centers)} feasible points found.')
+        self.get_logger().info(f'✅ {len(self.arc_points_and_centers)} feasible points found.')
 
         self.current_index = 0
-        self.get_logger().info('Waiting for MoveGroup action server...')
+        self.get_logger().info('⏳ Waiting for MoveGroup action server...')
         self._action_client.wait_for_server()
-        self.get_logger().info('MoveGroup action server connected.')
+        self.get_logger().info('✅ MoveGroup action server connected.')
         self.send_next_goal()
 
     def joint_state_callback(self, msg):
@@ -62,6 +62,7 @@ class MoveOnSlidingSphere(Node):
         points = []
         steps = 18
         max_slide = 0.2
+        last_angle = None
 
         for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center_base_y
@@ -81,27 +82,37 @@ class MoveOnSlidingSphere(Node):
                 x = cx + circle_radius * math.cos(theta)
                 z = cz + circle_radius * math.sin(theta)
 
-                pose = self.compute_pose_normal_to_sphere(x, y, z, cx, cy, cz)
+                pose, angle = self.compute_pose_pointing_to_center_flat(x, y, z, cx, cy)
                 pose.header.stamp = self.get_clock().now().to_msg()
+
+                # 滑らかな法線変化（単調増加/減少）のチェック
+                if last_angle is not None and abs(angle - last_angle) > 0.2:
+                    self.get_logger().warn(f'❌ Orientation jump at θ={theta_deg:.1f} skipped')
+                    continue
+                last_angle = angle
 
                 if self.quick_feasibility_check(pose):
                     points.append((pose, [cx, cy, cz]))
                 else:
-                    self.get_logger().warn(f'No IK at y={y:.3f}, theta={theta_deg:.1f}')
+                    self.get_logger().warn(f'❌ No IK at y={y:.3f}, θ={theta_deg:.1f}')
         return points
 
-    def compute_pose_normal_to_sphere(self, x, y, z, cx, cy, cz):
-        nx, ny, nz = x - cx, y - cy, z - cz
-        norm = math.sqrt(nx**2 + ny**2 + nz**2)
-        nx, ny, nz = nx / norm, ny / norm, nz / norm
-        z_axis = [nx, ny, nz]
+    def compute_pose_pointing_to_center_flat(self, x, y, z, cx, cy):
+        # 法線ベクトルはXY平面上の中心方向（Z成分ゼロ）
+        dir_x, dir_y = cx - x, cy - y
+        dir_z = 0.0
+        norm = math.sqrt(dir_x**2 + dir_y**2)
+        dir_x /= norm
+        dir_y /= norm
 
-        world_up = [0.0, 1.0, 0.0] if abs(ny) < 0.95 else [1.0, 0.0, 0.0]
+        # 回転方向はZ軸から求める
+        z_axis = [dir_x, dir_y, dir_z]
+        up = [0.0, 0.0, 1.0]  # 上方向をZとする（平面と一致）
 
         x_axis = [
-            world_up[1]*z_axis[2] - world_up[2]*z_axis[1],
-            world_up[2]*z_axis[0] - world_up[0]*z_axis[2],
-            world_up[0]*z_axis[1] - world_up[1]*z_axis[0]
+            up[1]*z_axis[2] - up[2]*z_axis[1],
+            up[2]*z_axis[0] - up[0]*z_axis[2],
+            up[0]*z_axis[1] - up[1]*z_axis[0],
         ]
         x_norm = math.sqrt(sum(v**2 for v in x_axis))
         x_axis = [v / x_norm for v in x_axis]
@@ -109,19 +120,22 @@ class MoveOnSlidingSphere(Node):
         y_axis = [
             z_axis[1]*x_axis[2] - z_axis[2]*x_axis[1],
             z_axis[2]*x_axis[0] - z_axis[0]*x_axis[2],
-            z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0]
+            z_axis[0]*x_axis[1] - z_axis[1]*x_axis[0],
         ]
 
         rot_matrix = [
-            [x_axis[0], y_axis[0], z_axis[0], 0],
-            [x_axis[1], y_axis[1], z_axis[1], 0],
-            [x_axis[2], y_axis[2], z_axis[2], 0],
-            [0, 0, 0, 1]
+            [x_axis[0], y_axis[0], z_axis[0]],
+            [x_axis[1], y_axis[1], z_axis[1]],
+            [x_axis[2], y_axis[2], z_axis[2]],
         ]
-        quat = tf_transformations.quaternion_from_matrix(rot_matrix)
+        quat = tf_transformations.quaternion_from_matrix([
+            [rot_matrix[0][0], rot_matrix[0][1], rot_matrix[0][2], 0],
+            [rot_matrix[1][0], rot_matrix[1][1], rot_matrix[1][2], 0],
+            [rot_matrix[2][0], rot_matrix[2][1], rot_matrix[2][2], 0],
+            [0, 0, 0, 1]
+        ])
 
         pose = PoseStamped()
-        pose.header.stamp = self.get_clock().now().to_msg()
         pose.header.frame_id = 'base_link'
         pose.pose.position.x = x
         pose.pose.position.y = y
@@ -130,7 +144,10 @@ class MoveOnSlidingSphere(Node):
         pose.pose.orientation.y = quat[1]
         pose.pose.orientation.z = quat[2]
         pose.pose.orientation.w = quat[3]
-        return pose
+
+        # XY平面上のベクトルの角度を返す
+        angle = math.atan2(dir_y, dir_x)
+        return pose, angle
 
     def quick_feasibility_check(self, pose):
         request = GetPositionIK.Request()
@@ -141,12 +158,11 @@ class MoveOnSlidingSphere(Node):
 
         future = self.ik_client.call_async(request)
         rclpy.spin_until_future_complete(self, future)
-
         return future.result() and future.result().error_code.val == 1
 
     def send_next_goal(self):
         if self.current_index >= len(self.arc_points_and_centers):
-            self.get_logger().info('All feasible points executed.')
+            self.get_logger().info('🎉 All feasible points executed.')
             rclpy.shutdown()
             return
 
@@ -174,9 +190,9 @@ class MoveOnSlidingSphere(Node):
         oc.header.frame_id = pose.header.frame_id
         oc.link_name = 'ee_link'
         oc.orientation = pose.pose.orientation
-        oc.absolute_x_axis_tolerance = 0.3
-        oc.absolute_y_axis_tolerance = 0.3
-        oc.absolute_z_axis_tolerance = 0.3
+        oc.absolute_x_axis_tolerance = 0.1
+        oc.absolute_y_axis_tolerance = 0.1
+        oc.absolute_z_axis_tolerance = 0.1
         oc.weight = 1.0
 
         constraints = Constraints()
@@ -191,16 +207,16 @@ class MoveOnSlidingSphere(Node):
     def goal_response_callback(self, future):
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error('Goal rejected')
+            self.get_logger().error('❌ Goal rejected')
             rclpy.shutdown()
             return
-        self.get_logger().info(f'Executing point {self.current_index + 1}/{len(self.arc_points_and_centers)}')
+        self.get_logger().info(f'▶️ Executing point {self.current_index + 1}/{len(self.arc_points_and_centers)}')
         self._get_result_future = goal_handle.get_result_async()
         self._get_result_future.add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
         result = future.result().result
-        self.get_logger().info(f'Result code: {result.error_code.val}')
+        self.get_logger().info(f'🌟 Result code: {result.error_code.val}')
         self.current_index += 1
         self.send_next_goal()
 
@@ -213,7 +229,7 @@ class MoveOnSlidingSphere(Node):
             self.ee_traj.append(point)
             self.publish_trajectories()
         except Exception as e:
-            self.get_logger().warn(f'TF lookup failed: {e}')
+            self.get_logger().warn(f'⚠️ TF lookup failed: {e}')
 
     def publish_sphere_marker(self, center):
         marker = Marker()
@@ -251,6 +267,7 @@ class MoveOnSlidingSphere(Node):
 
         marker_array.markers.append(ee_line)
         self.marker_array_pub.publish(marker_array)
+
 
 def main(args=None):
     rclpy.init(args=args)
