@@ -60,7 +60,7 @@ class MoveOnSlidingSphere(Node):
     def generate_intersection_points_with_dynamic_slide(self):
         points = []
         steps = 18
-        max_slide = 0.13
+        max_slide = 0.20
 
         for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center_base_y
@@ -162,9 +162,9 @@ class MoveOnSlidingSphere(Node):
 
         adjusted_pose = PoseStamped()
         adjusted_pose.header = pose.header
-        adjusted_pose.pose.position.x = pose.pose.position.x - 0.198 * z_axis[0]
-        adjusted_pose.pose.position.y = pose.pose.position.y - 0.198 * z_axis[1]
-        adjusted_pose.pose.position.z = pose.pose.position.z - 0.198 * z_axis[2]
+        adjusted_pose.pose.position.x = pose.pose.position.x - 0.0198 * z_axis[0]
+        adjusted_pose.pose.position.y = pose.pose.position.y - 0.0198 * z_axis[1]
+        adjusted_pose.pose.position.z = pose.pose.position.z - 0.0198 * z_axis[2]
         adjusted_pose.pose.orientation = pose.pose.orientation
 
         request = GetPositionIK.Request()
