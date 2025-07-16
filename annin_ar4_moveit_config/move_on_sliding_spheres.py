@@ -34,10 +34,10 @@ class MoveOnSlidingSphere(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.center_base_x = 0.0
-        self.center_base_y = -0.40
+        self.center_base_y = -0.50
         self.center_base_z = 0.1
         self.radius = 0.13
-        self.y_planes = [-0.40, -0.39, -0.38, -0.27]
+        self.y_planes = [-0.50, -0.48, -0.46, -0.37]
         self.ee_traj = []
 
         self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
@@ -162,9 +162,9 @@ class MoveOnSlidingSphere(Node):
 
         adjusted_pose = PoseStamped()
         adjusted_pose.header = pose.header
-        adjusted_pose.pose.position.x = pose.pose.position.x - 0.0198 * z_axis[0]
-        adjusted_pose.pose.position.y = pose.pose.position.y - 0.0198 * z_axis[1]
-        adjusted_pose.pose.position.z = pose.pose.position.z - 0.0198 * z_axis[2]
+        adjusted_pose.pose.position.x = pose.pose.position.x - 0.188 * z_axis[0]
+        adjusted_pose.pose.position.y = pose.pose.position.y - 0.188 * z_axis[1]
+        adjusted_pose.pose.position.z = pose.pose.position.z - 0.188 * z_axis[2]
         adjusted_pose.pose.orientation = pose.pose.orientation
 
         request = GetPositionIK.Request()
