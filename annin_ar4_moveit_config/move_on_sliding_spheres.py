@@ -18,7 +18,6 @@ from tf2_ros import TransformListener, Buffer
 from rclpy.duration import Duration
 from rclpy.time import Time
 
-
 class MoveOnSlidingSphere(Node):
     def __init__(self):
         super().__init__('move_on_sliding_sphere')
@@ -82,6 +81,8 @@ class MoveOnSlidingSphere(Node):
                 z = cz + circle_radius * math.sin(theta)
 
                 pose = self.compute_pose_pointing_to_center(x, y, z, cx, cy, cz)
+                if pose is None:
+                    continue
                 pose.header.stamp = self.get_clock().now().to_msg()
 
                 if self.quick_feasibility_check(pose):
@@ -104,6 +105,19 @@ class MoveOnSlidingSphere(Node):
             up[0]*dir_y - up[1]*dir_x,
         ]
         x_norm = math.sqrt(sum(v**2 for v in x_axis))
+
+        if x_norm < 1e-6:
+            up = [1, 0, 0]
+            x_axis = [
+                up[1]*dir_z - up[2]*dir_y,
+                up[2]*dir_x - up[0]*dir_z,
+                up[0]*dir_y - up[1]*dir_x,
+            ]
+            x_norm = math.sqrt(sum(v**2 for v in x_axis))
+            if x_norm < 1e-6:
+                self.get_logger().warn('⚠️ x_axis norm too small')
+                return None
+
         x_axis = [v / x_norm for v in x_axis]
 
         new_y = [
@@ -137,9 +151,25 @@ class MoveOnSlidingSphere(Node):
         return pose
 
     def quick_feasibility_check(self, pose):
+        # Adjust pose 198mm back along EE Z axis for IK feasibility
+        rot = tf_transformations.quaternion_matrix([
+            pose.pose.orientation.x,
+            pose.pose.orientation.y,
+            pose.pose.orientation.z,
+            pose.pose.orientation.w
+        ])
+        z_axis = rot[:3, 2]
+
+        adjusted_pose = PoseStamped()
+        adjusted_pose.header = pose.header
+        adjusted_pose.pose.position.x = pose.pose.position.x - 0.198 * z_axis[0]
+        adjusted_pose.pose.position.y = pose.pose.position.y - 0.198 * z_axis[1]
+        adjusted_pose.pose.position.z = pose.pose.position.z - 0.198 * z_axis[2]
+        adjusted_pose.pose.orientation = pose.pose.orientation
+
         request = GetPositionIK.Request()
         request.ik_request.group_name = 'ar_manipulator'
-        request.ik_request.pose_stamped = pose
+        request.ik_request.pose_stamped = adjusted_pose
         request.ik_request.ik_link_name = 'ee_link'
         request.ik_request.timeout.sec = 1
 
@@ -168,7 +198,7 @@ class MoveOnSlidingSphere(Node):
         pc = PositionConstraint()
         pc.header.frame_id = pose.header.frame_id
         pc.link_name = 'ee_link'
-        pc.target_point_offset.z = 0.198  # ✅ EEからZ方向198mm先端を目標に
+        pc.target_point_offset.z = 0.198
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
         box.dimensions = [0.01, 0.01, 0.01]
@@ -256,12 +286,10 @@ class MoveOnSlidingSphere(Node):
         marker_array.markers.append(ee_line)
         self.marker_array_pub.publish(marker_array)
 
-
 def main(args=None):
     rclpy.init(args=args)
     node = MoveOnSlidingSphere()
     rclpy.spin(node)
-
 
 if __name__ == '__main__':
     main()
