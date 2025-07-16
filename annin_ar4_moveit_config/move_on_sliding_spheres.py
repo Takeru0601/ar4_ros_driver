@@ -35,7 +35,7 @@ class MoveOnSlidingSphere(Node):
 
         self.center_base_x = 0.0
         self.center_base_y = -0.50
-        self.center_base_z = 0.1
+        self.center_base_z = 0.15
         self.radius = 0.13
         self.y_planes = [-0.50, -0.48, -0.46, -0.37]
         self.ee_traj = []
