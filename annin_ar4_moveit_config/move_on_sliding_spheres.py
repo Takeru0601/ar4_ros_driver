@@ -18,6 +18,7 @@ from tf2_ros import TransformListener, Buffer
 from rclpy.duration import Duration
 from rclpy.time import Time
 
+
 class MoveOnSlidingSphere(Node):
     def __init__(self):
         super().__init__('move_on_sliding_sphere')
@@ -37,7 +38,7 @@ class MoveOnSlidingSphere(Node):
         self.center_base_y = -0.40
         self.center_base_z = 0.1
         self.radius = 0.13
-        self.y_planes = [-0.40, -0.39, -0.38,-0.27]
+        self.y_planes = [-0.40, -0.39, -0.38, -0.27]
         self.ee_traj = []
 
         self.ik_client = self.create_client(GetPositionIK, '/compute_ik')
@@ -72,7 +73,7 @@ class MoveOnSlidingSphere(Node):
                 theta_deg = 180 * i / steps if plane_idx % 2 == 0 else 180 * (steps - i) / steps
                 theta = math.radians(theta_deg)
 
-                slide_bias = -max_slide * math.cos(theta)  # 軽く反対方向に変更
+                slide_bias = -max_slide * math.cos(theta)
                 cx = self.center_base_x + slide_bias
                 cy = self.center_base_y
                 cz = self.center_base_z
@@ -167,6 +168,7 @@ class MoveOnSlidingSphere(Node):
         pc = PositionConstraint()
         pc.header.frame_id = pose.header.frame_id
         pc.link_name = 'ee_link'
+        pc.target_point_offset.z = 0.198  # ✅ EEからZ方向198mm先端を目標に
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
         box.dimensions = [0.01, 0.01, 0.01]
@@ -177,9 +179,9 @@ class MoveOnSlidingSphere(Node):
         oc.header.frame_id = pose.header.frame_id
         oc.link_name = 'ee_link'
         oc.orientation = pose.pose.orientation
-        oc.absolute_x_axis_tolerance = 0.3
-        oc.absolute_y_axis_tolerance = 0.3
-        oc.absolute_z_axis_tolerance = 0.3
+        oc.absolute_x_axis_tolerance = 0.1
+        oc.absolute_y_axis_tolerance = 0.1
+        oc.absolute_z_axis_tolerance = 0.1
         oc.weight = 1.0
 
         constraints = Constraints()
@@ -209,8 +211,7 @@ class MoveOnSlidingSphere(Node):
 
     def update_ee_marker(self):
         try:
-            trans = self.tf_buffer.lookup_transform(
-                'base_link', 'ee_link', Time(), timeout=Duration(seconds=0.5))
+            trans = self.tf_buffer.lookup_transform('base_link', 'ee_link', Time(), timeout=Duration(seconds=0.5))
             pos = trans.transform.translation
             point = Point(x=pos.x, y=pos.y, z=pos.z)
             self.ee_traj.append(point)
@@ -223,7 +224,7 @@ class MoveOnSlidingSphere(Node):
         marker.header.frame_id = 'base_link'
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = 'sphere_center'
-        marker.id = 999  # IDを固定して上書きする
+        marker.id = 999
         marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         marker.pose.position.x = center[0]
@@ -255,10 +256,12 @@ class MoveOnSlidingSphere(Node):
         marker_array.markers.append(ee_line)
         self.marker_array_pub.publish(marker_array)
 
+
 def main(args=None):
     rclpy.init(args=args)
     node = MoveOnSlidingSphere()
     rclpy.spin(node)
+
 
 if __name__ == '__main__':
     main()
