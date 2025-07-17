@@ -198,7 +198,7 @@ class MoveOnSlidingSphere(Node):
         pc = PositionConstraint()
         pc.header.frame_id = pose.header.frame_id
         pc.link_name = 'ee_link'
-        pc.target_point_offset.z = 0.198
+        pc.target_point_offset.z = 0.188
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
         box.dimensions = [0.01, 0.01, 0.01]
