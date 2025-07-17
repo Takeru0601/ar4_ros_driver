@@ -34,7 +34,7 @@ class MoveOnSlidingSphere(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self.center_base_x = 0.0
-        self.center_base_y = -0.60
+        self.center_base_y = -0.65
         self.center_base_z = 0.15
         self.radius = 0.13
         self.y_planes = [-0.50, -0.48, -0.46, -0.37]
@@ -60,7 +60,7 @@ class MoveOnSlidingSphere(Node):
     def generate_intersection_points_with_dynamic_slide(self):
         points = []
         steps = 18
-        max_slide = 0.20
+        max_slide = 0.20 
 
         for plane_idx, y in enumerate(self.y_planes):
             dy = y - self.center_base_y
