@@ -5,7 +5,7 @@
 #include <thread>
 
 //#define FW_VERSION "2.1.0"から書き換え
-#define FW_VERSION "2.1.0C1Dmk3"
+#define FW_VERSION "2.1.0"
 
 
 namespace annin_ar4_driver {
