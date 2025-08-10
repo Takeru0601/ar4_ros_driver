@@ -3,10 +3,10 @@
 #include <chrono>
 #include <stdexcept>
 #include <thread>
+#include <sstream>
+#include <iomanip>
 
-//#define FW_VERSION "2.1.0"から書き換え
 #define FW_VERSION "2.1.0"
-
 
 namespace annin_ar4_driver {
 
@@ -32,8 +32,12 @@ bool TeensyDriver::init(std::string ar_model, std::string port, int baudrate,
                 port.c_str());
   }
 
+  // ★ デバイス安定待ち（起動直後の応答欠落対策）
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
   initialised_ = false;
-  std::string msg = "STA" + version_ + "B" + ar_model_ + "\n";
+  // ★ CRLFで送信（\r\n）
+  std::string msg = "STA" + version_ + "B" + ar_model_ + "\r\n";
 
   while (!initialised_) {
     RCLCPP_INFO(logger_, "Waiting for response from Teensy on port %s",
@@ -123,8 +127,9 @@ void TeensyDriver::update(std::vector<double>& pos_commands,
   RCLCPP_DEBUG_THROTTLE(logger_, clock_, 500, logInfo.c_str());
 }
 
-bool TeensyDriver::calibrateJoints() {
-  std::string outMsg = "JC\n";
+bool TeensyDriver::calibrateJoints(std::string calib_sequence) {
+  std::string outMsg = "JC" + calib_sequence + "\n";
+  RCLCPP_INFO(logger_, "Sending calibration command: %s", outMsg.c_str());
   return sendCommand(outMsg);
 }
 
@@ -165,11 +170,17 @@ bool TeensyDriver::exchange(std::string outMsg) {
 
   while (true) {
     receive(inMsg);
+    // ★ 受信行を必ず可視化
+    RCLCPP_INFO(logger_, "RX: %s", inMsg.c_str());
+
     std::string header = inMsg.substr(0, 2);
 
     if (header == "DB") {
       // debug message
       RCLCPP_DEBUG(logger_, "Debug message: %s", inMsg.c_str());
+    } else if (header == "WN") {
+      // warning message
+      RCLCPP_WARN(logger_, "Warning: %s", inMsg.c_str());
     } else {
       if (header == "ST") {
         // init acknowledgement
@@ -223,6 +234,7 @@ void TeensyDriver::receive(std::string& inMsg) {
     boost::asio::read(serial_port_, boost::asio::buffer(&c, 1));
     switch (c) {
       case '\r':
+        // ignore CR, wait for LF
         break;
       case '\n':
         eol = true;
@@ -234,20 +246,39 @@ void TeensyDriver::receive(std::string& inMsg) {
   inMsg = msg;
 }
 
+// ★ 安全な区間指定で ST 行を解析
 void TeensyDriver::checkInit(std::string msg) {
-  std::size_t ack_idx = msg.find("A", 2) + 1;
-  std::size_t version_idx = msg.find("B", 2) + 1;
-  std::size_t ar_model_matched_idx = msg.find("C", 2) + 1;
-  std::size_t ar_model_idx = msg.find("D", 2) + 1;
-  int ack = std::stoi(msg.substr(ack_idx, version_idx));
-  int ar_model_matched =
-      std::stoi(msg.substr(ar_model_matched_idx, ar_model_idx));
+  // 形式: "ST" + "A" + <ack> + "B" + <version> + "C" + <ar_model_matched> + "D" + <ar_model>
+  auto a = msg.find('A', 2);
+  auto b = msg.find('B', 2);
+  auto c = msg.find('C', 2);
+  auto d = msg.find('D', 2);
+
+  if (a == std::string::npos || b == std::string::npos ||
+      c == std::string::npos || d == std::string::npos || b <= a || c <= b || d <= c) {
+    RCLCPP_WARN(logger_, "Malformed ST line: %s", msg.c_str());
+    return;
+  }
+
+  int ack = 0;
+  int ar_model_matched = 0;
+  std::string version;
+  std::string ar_model;
+
+  try {
+    ack = std::stoi(msg.substr(a + 1, b - (a + 1)));
+    version = msg.substr(b + 1, c - (b + 1));
+    ar_model_matched = std::stoi(msg.substr(c + 1, d - (c + 1)));
+    ar_model = msg.substr(d + 1);
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(logger_, "Failed to parse ST line: %s (err=%s)", msg.c_str(), e.what());
+    return;
+  }
+
   if (!ack) {
-    std::string version = msg.substr(version_idx);
     RCLCPP_ERROR(logger_, "Firmware version mismatch %s", version.c_str());
   }
   if (!ar_model_matched) {
-    std::string ar_model = msg.substr(ar_model_idx);
     RCLCPP_ERROR(logger_, "Model mismatch %s", ar_model.c_str());
   }
   if (ack && ar_model_matched) {
