@@ -1,10 +1,10 @@
 #include "annin_ar4_driver/teensy_driver.hpp"
 
 #include <chrono>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
-#include <sstream>
-#include <iomanip>
 
 #define FW_VERSION "2.1.0"
 
@@ -32,11 +32,11 @@ bool TeensyDriver::init(std::string ar_model, std::string port, int baudrate,
                 port.c_str());
   }
 
-  // ★ デバイス安定待ち（起動直後の応答欠落対策）
+  // Device settle (some boards drop the 1st bytes right after open)
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
   initialised_ = false;
-  // ★ CRLFで送信（\r\n）
+  // Send CRLF on the very first handshake (compat with some firmwares)
   std::string msg = "STA" + version_ + "B" + ar_model_ + "\r\n";
 
   while (!initialised_) {
@@ -127,8 +127,8 @@ void TeensyDriver::update(std::vector<double>& pos_commands,
   RCLCPP_DEBUG_THROTTLE(logger_, clock_, 500, logInfo.c_str());
 }
 
-bool TeensyDriver::calibrateJoints(std::string calib_sequence) {
-  std::string outMsg = "JC" + calib_sequence + "\n";
+bool TeensyDriver::calibrateJoints() {
+  std::string outMsg = "JC\n";  // protocol: no sequence argument
   RCLCPP_INFO(logger_, "Sending calibration command: %s", outMsg.c_str());
   return sendCommand(outMsg);
 }
@@ -170,16 +170,18 @@ bool TeensyDriver::exchange(std::string outMsg) {
 
   while (true) {
     receive(inMsg);
-    // ★ 受信行を必ず可視化
+    // Always dump the received line for visibility
     RCLCPP_INFO(logger_, "RX: %s", inMsg.c_str());
 
+    if (inMsg.size() < 2) {
+      RCLCPP_WARN(logger_, "Short line: '%s'", inMsg.c_str());
+      continue;
+    }
     std::string header = inMsg.substr(0, 2);
 
     if (header == "DB") {
-      // debug message
       RCLCPP_DEBUG(logger_, "Debug message: %s", inMsg.c_str());
     } else if (header == "WN") {
-      // warning message
       RCLCPP_WARN(logger_, "Warning: %s", inMsg.c_str());
     } else {
       if (header == "ST") {
@@ -189,10 +191,10 @@ bool TeensyDriver::exchange(std::string outMsg) {
         // encoder calibration values
         updateEncoderCalibrations(inMsg);
       } else if (header == "JP") {
-        // encoder steps
+        // joint positions (deg)
         updateJointPositions(inMsg);
       } else if (header == "JV") {
-        // encoder steps
+        // joint velocities (deg/s)
         updateJointVelocities(inMsg);
       } else if (header == "ES") {
         // estop status
@@ -215,7 +217,6 @@ bool TeensyDriver::exchange(std::string outMsg) {
 bool TeensyDriver::transmit(std::string msg, std::string& err) {
   boost::system::error_code ec;
   const auto sendBuffer = boost::asio::buffer(msg.c_str(), msg.size());
-
   boost::asio::write(serial_port_, sendBuffer, ec);
 
   if (!ec) {
@@ -246,16 +247,17 @@ void TeensyDriver::receive(std::string& inMsg) {
   inMsg = msg;
 }
 
-// ★ 安全な区間指定で ST 行を解析
+// Safely parse ST line with explicit field bounds
 void TeensyDriver::checkInit(std::string msg) {
-  // 形式: "ST" + "A" + <ack> + "B" + <version> + "C" + <ar_model_matched> + "D" + <ar_model>
+  // Format: "ST" + "A" + <ack> + "B" + <version> + "C" + <ar_model_matched> + "D" + <ar_model>
   auto a = msg.find('A', 2);
   auto b = msg.find('B', 2);
   auto c = msg.find('C', 2);
   auto d = msg.find('D', 2);
 
   if (a == std::string::npos || b == std::string::npos ||
-      c == std::string::npos || d == std::string::npos || b <= a || c <= b || d <= c) {
+      c == std::string::npos || d == std::string::npos ||
+      b <= a || c <= b || d <= c) {
     RCLCPP_WARN(logger_, "Malformed ST line: %s", msg.c_str());
     return;
   }
@@ -271,7 +273,8 @@ void TeensyDriver::checkInit(std::string msg) {
     ar_model_matched = std::stoi(msg.substr(c + 1, d - (c + 1)));
     ar_model = msg.substr(d + 1);
   } catch (const std::exception& e) {
-    RCLCPP_WARN(logger_, "Failed to parse ST line: %s (err=%s)", msg.c_str(), e.what());
+    RCLCPP_WARN(logger_, "Failed to parse ST line: %s (err=%s)", msg.c_str(),
+                e.what());
     return;
   }
 
