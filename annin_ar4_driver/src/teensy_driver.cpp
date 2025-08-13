@@ -1,24 +1,24 @@
+
 #include "annin_ar4_driver/teensy_driver.hpp"
 
 #include <chrono>
-#include <iomanip>
-#include <sstream>
 #include <stdexcept>
 #include <thread>
 
-#define FW_VERSION "2.1.0C1Dmk3"
+#define FW_VERSION "2.1.0"
 
 namespace annin_ar4_driver {
 
 bool TeensyDriver::init(std::string ar_model, std::string port, int baudrate,
                         int num_joints, bool velocity_control_enabled) {
-  // version / model
+  // @TODO read version from config
   version_ = FW_VERSION;
   ar_model_ = ar_model;
 
   // establish connection with teensy board
   boost::system::error_code ec;
   serial_port_.open(port, ec);
+
   if (ec) {
     RCLCPP_WARN(logger_, "Failed to connect to serial port %s", port.c_str());
     return false;
@@ -31,13 +31,8 @@ bool TeensyDriver::init(std::string ar_model, std::string port, int baudrate,
                 port.c_str());
   }
 
-  // device settle: some boards miss first bytes right after open
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
   initialised_ = false;
-
-  // first handshake uses CRLF for compatibility
-  std::string msg = "STA" + version_ + "B" + ar_model_ + "\r\n";
+  std::string msg = "STA" + version_ + "B" + ar_model_ + "\n";
 
   while (!initialised_) {
     RCLCPP_INFO(logger_, "Waiting for response from Teensy on port %s",
@@ -68,23 +63,23 @@ void TeensyDriver::update(std::vector<double>& pos_commands,
   // log pos_commands
   std::string logInfo = "Joint Pos Cmd: ";
   for (int i = 0; i < num_joints_; i++) {
-    std::stringstream ss;
-    ss << std::fixed << std::setprecision(2) << pos_commands[i];
-    logInfo += std::to_string(i) + ": " + ss.str() + " | ";
+    std::stringstream jointPositionStm;
+    jointPositionStm << std::fixed << std::setprecision(2) << pos_commands[i];
+    logInfo += std::to_string(i) + ": " + jointPositionStm.str() + " | ";
   }
   RCLCPP_DEBUG_THROTTLE(logger_, clock_, 500, logInfo.c_str());
 
   // log vel_commands
   logInfo = "Joint Vel Cmd: ";
   for (int i = 0; i < num_joints_; i++) {
-    std::stringstream ss;
-    ss << std::fixed << std::setprecision(2) << vel_commands[i];
-    logInfo += std::to_string(i) + ": " + ss.str() + " | ";
+    std::stringstream jointVelocityStm;
+    jointVelocityStm << std::fixed << std::setprecision(2) << vel_commands[i];
+    logInfo += std::to_string(i) + ": " + jointVelocityStm.str() + " | ";
   }
   RCLCPP_DEBUG_THROTTLE(logger_, clock_, 500, logInfo.c_str());
 
+  std::string outMsg = "";
   // construct update message
-  std::string outMsg;
   if (velocity_control_enabled_) {
     outMsg += "MV";
     for (int i = 0; i < num_joints_; ++i) {
@@ -103,31 +98,32 @@ void TeensyDriver::update(std::vector<double>& pos_commands,
   // run the communication with board
   exchange(outMsg);
 
-  // copy back states
   joint_positions = joint_positions_deg_;
   joint_velocities = joint_velocities_deg_;
 
   // print joint_positions
   logInfo = "Joint Pos: ";
   for (int i = 0; i < num_joints_; i++) {
-    std::stringstream ss;
-    ss << std::fixed << std::setprecision(2) << joint_positions[i];
-    logInfo += std::to_string(i) + ": " + ss.str() + " | ";
+    std::stringstream jointPositionStm;
+    jointPositionStm << std::fixed << std::setprecision(2)
+                     << joint_positions[i];
+    logInfo += std::to_string(i) + ": " + jointPositionStm.str() + " | ";
   }
   RCLCPP_DEBUG_THROTTLE(logger_, clock_, 500, logInfo.c_str());
 
   // print joint_velocities
   logInfo = "Joint Vel: ";
   for (int i = 0; i < num_joints_; i++) {
-    std::stringstream ss;
-    ss << std::fixed << std::setprecision(2) << joint_velocities[i];
-    logInfo += std::to_string(i) + ": " + ss.str() + " | ";
+    std::stringstream jointVelocityStm;
+    jointVelocityStm << std::fixed << std::setprecision(2)
+                     << joint_velocities[i];
+    logInfo += std::to_string(i) + ": " + jointVelocityStm.str() + " | ";
   }
   RCLCPP_DEBUG_THROTTLE(logger_, clock_, 500, logInfo.c_str());
 }
 
-bool TeensyDriver::calibrateJoints() {
-  std::string outMsg = "JC\n";  // protocol: no sequence argument
+bool TeensyDriver::calibrateJoints(std::string calib_sequence) {
+  std::string outMsg = "JC" + calib_sequence + "\n";
   RCLCPP_INFO(logger_, "Sending calibration command: %s", outMsg.c_str());
   return sendCommand(outMsg);
 }
@@ -161,27 +157,21 @@ bool TeensyDriver::exchange(std::string outMsg) {
   std::string inMsg;
   std::string errTransmit = "";
 
-  // send
+  // RCLCPP_INFO(logger_, "Sending message: %s", outMsg.c_str());
   if (!transmit(outMsg, errTransmit)) {
     RCLCPP_ERROR(logger_, "Error in transmit: %s", errTransmit.c_str());
     return false;
   }
 
-  // receive single-line response and dispatch
   while (true) {
     receive(inMsg);
-    // Always dump the received line for visibility
-    RCLCPP_INFO(logger_, "RX: %s", inMsg.c_str());
-
-    if (inMsg.size() < 2) {
-      RCLCPP_WARN(logger_, "Short line: '%s'", inMsg.c_str());
-      continue;
-    }
     std::string header = inMsg.substr(0, 2);
 
     if (header == "DB") {
+      // debug message
       RCLCPP_DEBUG(logger_, "Debug message: %s", inMsg.c_str());
     } else if (header == "WN") {
+      // warning message
       RCLCPP_WARN(logger_, "Warning: %s", inMsg.c_str());
     } else {
       if (header == "ST") {
@@ -191,10 +181,10 @@ bool TeensyDriver::exchange(std::string outMsg) {
         // encoder calibration values
         updateEncoderCalibrations(inMsg);
       } else if (header == "JP") {
-        // joint positions (deg)
+        // encoder steps
         updateJointPositions(inMsg);
       } else if (header == "JV") {
-        // joint velocities (deg/s)
+        // encoder steps
         updateJointVelocities(inMsg);
       } else if (header == "ES") {
         // estop status
@@ -217,6 +207,7 @@ bool TeensyDriver::exchange(std::string outMsg) {
 bool TeensyDriver::transmit(std::string msg, std::string& err) {
   boost::system::error_code ec;
   const auto sendBuffer = boost::asio::buffer(msg.c_str(), msg.size());
+
   boost::asio::write(serial_port_, sendBuffer, ec);
 
   if (!ec) {
@@ -235,7 +226,6 @@ void TeensyDriver::receive(std::string& inMsg) {
     boost::asio::read(serial_port_, boost::asio::buffer(&c, 1));
     switch (c) {
       case '\r':
-        // ignore CR, wait for LF
         break;
       case '\n':
         eol = true;
@@ -247,33 +237,72 @@ void TeensyDriver::receive(std::string& inMsg) {
   inMsg = msg;
 }
 
-// Safely parse ST line with explicit field bounds
 void TeensyDriver::checkInit(std::string msg) {
-  // Format: "ST" + "A" + <ack> + "B" + <version> + "C" + <ar_model_matched> + "D" + <ar_model>
-  auto a = msg.find('A', 2);
-  auto b = msg.find('B', 2);
-  auto c = msg.find('C', 2);
-  auto d = msg.find('D', 2);
-
-  if (a == std::string::npos || b == std::string::npos ||
-      c == std::string::npos || d == std::string::npos ||
-      b <= a || c <= b || d <= c) {
-    RCLCPP_WARN(logger_, "Malformed ST line: %s", msg.c_str());
-    return;
+  std::size_t ack_idx = msg.find("A", 2) + 1;
+  std::size_t version_idx = msg.find("B", 2) + 1;
+  std::size_t ar_model_matched_idx = msg.find("C", 2) + 1;
+  std::size_t ar_model_idx = msg.find("D", 2) + 1;
+  int ack = std::stoi(msg.substr(ack_idx, version_idx));
+  int ar_model_matched =
+      std::stoi(msg.substr(ar_model_matched_idx, ar_model_idx));
+  if (!ack) {
+    std::string version = msg.substr(version_idx);
+    RCLCPP_ERROR(logger_, "Firmware version mismatch %s", version.c_str());
   }
-
-  int ack = 0;
-  int ar_model_matched = 0;
-  std::string version;
-  std::string ar_model;
-
-  try {
-    ack = std::stoi(msg.substr(a + 1, b - (a + 1)));
-    version = msg.substr(b + 1, c - (b + 1));
-    ar_model_matched = std::stoi(msg.substr(c + 1, d - (c + 1)));
-    ar_model = msg.substr(d + 1);
-  } catch (const std::exception& e) {
-    RCLCPP_WARN(logger_, "Failed to parse ST line: %s (err=%s)", msg.c_str(),
-                e.what());
-    return;
+  if (!ar_model_matched) {
+    std::string ar_model = msg.substr(ar_model_idx);
+    RCLCPP_ERROR(logger_, "Model mismatch %s", ar_model.c_str());
   }
+  if (ack && ar_model_matched) {
+    initialised_ = true;
+  }
+}
+
+void TeensyDriver::updateJointPositions(const std::string msg) {
+  parseValuesToVector(msg, joint_positions_deg_);
+}
+
+void TeensyDriver::updateJointVelocities(const std::string msg) {
+  parseValuesToVector(msg, joint_velocities_deg_);
+}
+
+void TeensyDriver::updateEStopStatus(std::string msg) {
+  is_estopped_ = msg.substr(2) == "1" ? true : false;
+}
+
+void TeensyDriver::updateEncoderCalibrations(const std::string msg) {
+  parseValuesToVector(msg, enc_calibrations_);
+}
+
+template <typename T>
+void TeensyDriver::parseValuesToVector(const std::string msg,
+                                       std::vector<T>& values) {
+  values.clear();
+  size_t prevIdx = msg.find('A', 2) + 1;
+
+  for (size_t i = 1;; ++i) {
+    char currentIdentifier = 'A' + i;
+    size_t currentIdx = msg.find(currentIdentifier, 2);
+
+    try {
+      if (currentIdx == std::string::npos) {
+        if constexpr (std::is_same<T, int>::value) {
+          values.push_back(std::stoi(msg.substr(prevIdx)));
+        } else if constexpr (std::is_same<T, double>::value) {
+          values.push_back(std::stod(msg.substr(prevIdx)));
+        }
+        break;
+      }
+      if constexpr (std::is_same<T, int>::value) {
+        values.push_back(std::stoi(msg.substr(prevIdx, currentIdx - prevIdx)));
+      } else if constexpr (std::is_same<T, double>::value) {
+        values.push_back(std::stod(msg.substr(prevIdx, currentIdx - prevIdx)));
+      }
+    } catch (const std::invalid_argument&) {
+      RCLCPP_WARN(logger_, "Invalid argument, can't parse %s", msg.c_str());
+    }
+    prevIdx = currentIdx + 1;
+  }
+}
+
+}  // namespace annin_ar4_driver
