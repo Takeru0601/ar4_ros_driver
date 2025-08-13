@@ -128,8 +128,9 @@ void TeensyDriver::update(std::vector<double>& pos_commands,
   }
 }
 
-bool TeensyDriver::calibrateJoints(std::string calib_sequence) {
-  std::string outMsg = "JC" + calib_sequence + "\n";
+// ★ 引数なしに変更（"JC\n" を送信）
+bool TeensyDriver::calibrateJoints() {
+  std::string outMsg = "JC\n";
   RCLCPP_INFO(logger_, "Sending calibration command: %s", outMsg.c_str());
   return sendCommand(outMsg);
 }
