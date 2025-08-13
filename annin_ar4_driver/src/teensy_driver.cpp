@@ -1,4 +1,3 @@
-
 #include "annin_ar4_driver/teensy_driver.hpp"
 
 #include <chrono>
