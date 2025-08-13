@@ -133,7 +133,7 @@ def generate_launch_description():
     ld.add_action(
         DeclareLaunchArgument(
             "include_gripper",
-            default_value="True",
+            default_value="False",
             description="Run the servo gripper",
             choices=["True", "False"],
         ))
