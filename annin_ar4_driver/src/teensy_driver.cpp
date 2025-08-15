@@ -1,8 +1,8 @@
 #include "annin_ar4_driver/teensy_driver.hpp"
 
 #include <chrono>
-#include <iomanip>
 #include <sstream>
+#include <iomanip>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
@@ -15,13 +15,14 @@ TeensyDriver::TeensyDriver() : serial_port_(io_service_) {}
 
 bool TeensyDriver::init(std::string ar_model, std::string port, int baudrate,
                         int num_joints, bool velocity_control_enabled) {
-  // version / model
+  // @TODO read version from config
   version_ = FW_VERSION;
   ar_model_ = ar_model;
 
   // establish connection with teensy board
   boost::system::error_code ec;
   serial_port_.open(port, ec);
+
   if (ec) {
     RCLCPP_WARN(logger_, "Failed to connect to serial port %s", port.c_str());
     return false;
@@ -30,15 +31,11 @@ bool TeensyDriver::init(std::string ar_model, std::string port, int baudrate,
         boost::asio::serial_port_base::baud_rate(static_cast<uint32_t>(baudrate)));
     serial_port_.set_option(
         boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
-    // ★ デバイスが落ち着くまで少し待機（初回取りこぼし対策）
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     RCLCPP_INFO(logger_, "Successfully connected to serial port %s", port.c_str());
   }
 
   initialised_ = false;
-
-  // ★ 初回ハンドシェイクは CRLF 終端に変更（互換性対策）
-  std::string msg = "STA" + version_ + "B" + ar_model_ + "\r\n";
+  std::string msg = "STA" + version_ + "B" + ar_model_ + "\n";
 
   while (!initialised_) {
     RCLCPP_INFO(logger_, "Waiting for response from Teensy on port %s", port.c_str());
@@ -131,26 +128,22 @@ void TeensyDriver::update(std::vector<double>& pos_commands,
   }
 }
 
-// ★ キャリブレーション直前に待機し、失敗したら CRLF で 1 回だけリトライ
+// ★ 引数なしに変更（"JC\n" を送信）
 bool TeensyDriver::calibrateJoints() {
-  std::this_thread::sleep_for(std::chrono::milliseconds(300));  // 落ち着き待ち
   std::string outMsg = "JC\n";
   RCLCPP_INFO(logger_, "Sending calibration command: %s", outMsg.c_str());
-  if (sendCommand(outMsg)) {
-    return true;
-  }
-  std::string retryMsg = "JC\r\n";
-  RCLCPP_WARN(logger_, "Calibration LF failed, retrying with CRLF...");
-  return sendCommand(retryMsg);
+  return sendCommand(outMsg);
 }
 
 void TeensyDriver::getJointPositions(std::vector<double>& joint_positions) {
+  // get current joint positions
   std::string msg = "JP\n";
   exchange(msg);
   joint_positions = joint_positions_deg_;
 }
 
 void TeensyDriver::getJointVelocities(std::vector<double>& joint_velocities) {
+  // get current joint velocities
   std::string msg = "JV\n";
   exchange(msg);
   joint_velocities = joint_velocities_deg_;
@@ -220,6 +213,7 @@ bool TeensyDriver::transmit(std::string msg, std::string& err) {
   boost::system::error_code ec;
   const auto sendBuffer = boost::asio::buffer(msg.c_str(), msg.size());
   boost::asio::write(serial_port_, sendBuffer, ec);
+
   if (!ec) return true;
   err = ec.message();
   return false;
