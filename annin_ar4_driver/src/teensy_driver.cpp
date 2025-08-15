@@ -1,11 +1,12 @@
 #include "annin_ar4_driver/teensy_driver.hpp"
 
 #include <chrono>
-#include <sstream>
 #include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
+#include <cctype>
 
 #define FW_VERSION "2.1.0"
 
@@ -15,14 +16,13 @@ TeensyDriver::TeensyDriver() : serial_port_(io_service_) {}
 
 bool TeensyDriver::init(std::string ar_model, std::string port, int baudrate,
                         int num_joints, bool velocity_control_enabled) {
-  // @TODO read version from config
+  // version / model
   version_ = FW_VERSION;
   ar_model_ = ar_model;
 
   // establish connection with teensy board
   boost::system::error_code ec;
   serial_port_.open(port, ec);
-
   if (ec) {
     RCLCPP_WARN(logger_, "Failed to connect to serial port %s", port.c_str());
     return false;
@@ -31,11 +31,15 @@ bool TeensyDriver::init(std::string ar_model, std::string port, int baudrate,
         boost::asio::serial_port_base::baud_rate(static_cast<uint32_t>(baudrate)));
     serial_port_.set_option(
         boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
+    // ★ デバイスが落ち着くまで少し待機（初回取りこぼし対策）
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     RCLCPP_INFO(logger_, "Successfully connected to serial port %s", port.c_str());
   }
 
   initialised_ = false;
-  std::string msg = "STA" + version_ + "B" + ar_model_ + "\n";
+
+  // ★ 初回ハンドシェイクは CRLF 終端に変更（互換性対策）
+  std::string msg = "STA" + version_ + "B" + ar_model_ + "\r\n";
 
   while (!initialised_) {
     RCLCPP_INFO(logger_, "Waiting for response from Teensy on port %s", port.c_str());
@@ -128,22 +132,26 @@ void TeensyDriver::update(std::vector<double>& pos_commands,
   }
 }
 
-// ★ 引数なしに変更（"JC\n" を送信）
+// ★ キャリブレーション直前に待機し、失敗したら CRLF で 1 回だけリトライ
 bool TeensyDriver::calibrateJoints() {
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));  // 落ち着き待ち
   std::string outMsg = "JC\n";
   RCLCPP_INFO(logger_, "Sending calibration command: %s", outMsg.c_str());
-  return sendCommand(outMsg);
+  if (sendCommand(outMsg)) {
+    return true;
+  }
+  std::string retryMsg = "JC\r\n";
+  RCLCPP_WARN(logger_, "Calibration LF failed, retrying with CRLF...");
+  return sendCommand(retryMsg);
 }
 
 void TeensyDriver::getJointPositions(std::vector<double>& joint_positions) {
-  // get current joint positions
   std::string msg = "JP\n";
   exchange(msg);
   joint_positions = joint_positions_deg_;
 }
 
 void TeensyDriver::getJointVelocities(std::vector<double>& joint_velocities) {
-  // get current joint velocities
   std::string msg = "JV\n";
   exchange(msg);
   joint_velocities = joint_velocities_deg_;
@@ -159,7 +167,31 @@ bool TeensyDriver::isEStopped() { return is_estopped_; }
 
 bool TeensyDriver::sendCommand(std::string outMsg) { return exchange(outMsg); }
 
-// Send msg to board and collect data
+// ---- ここから受信分割・多重フレーム対応 ----
+
+// ヘッダ候補を列挙
+static inline bool is_known_header(const std::string& s, size_t i) {
+  if (i + 1 >= s.size()) return false;
+  char h0 = s[i], h1 = s[i + 1];
+  // 先頭は英大文字2文字だけ許容（実際に使うものは下でチェック）
+  if (!std::isupper(static_cast<unsigned char>(h0)) ||
+      !std::isupper(static_cast<unsigned char>(h1))) return false;
+
+  switch ((h0 << 8) | h1) {
+    case ('S'<<8)|'T': // ST
+    case ('J'<<8)|'C': // JC
+    case ('J'<<8)|'P': // JP
+    case ('J'<<8)|'V': // JV
+    case ('E'<<8)|'S': // ES
+    case ('D'<<8)|'B': // DB
+    case ('W'<<8)|'N': // WN
+    case ('E'<<8)|'R': // ER
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool TeensyDriver::exchange(std::string outMsg) {
   std::string inMsg;
   std::string errTransmit;
@@ -169,57 +201,84 @@ bool TeensyDriver::exchange(std::string outMsg) {
     return false;
   }
 
-  // receive single-line response and dispatch
+  // 複数フレーム連結に対応して、既知ヘッダごとに切って順次処理する。
   while (true) {
     receive(inMsg);
-    if (inMsg.size() < 2) {
-      RCLCPP_WARN(logger_, "Short line: '%s'", inMsg.c_str());
+    if (inMsg.empty()) {
+      RCLCPP_WARN(logger_, "Empty line received");
       continue;
     }
-    std::string header = inMsg.substr(0, 2);
 
-    if (header == "DB") {
-      RCLCPP_DEBUG(logger_, "Debug: %s", inMsg.c_str());
-      continue;
-    } else if (header == "WN") {
-      RCLCPP_WARN(logger_, "Warning: %s", inMsg.c_str());
-      continue;
-    } else if (header == "ER") {
-      RCLCPP_INFO(logger_, "ERROR message: %s", inMsg.c_str());
-      return false;
-    } else if (header == "ST") {
-      checkInit(inMsg);
-      return true;
-    } else if (header == "JC") {
-      updateEncoderCalibrations(inMsg);
-      return true;
-    } else if (header == "JP") {
-      updateJointPositions(inMsg);
-      return true;
-    } else if (header == "JV") {
-      updateJointVelocities(inMsg);
-      return true;
-    } else if (header == "ES") {
-      updateEStopStatus(inMsg);
-      return true;
-    } else {
-      RCLCPP_WARN(logger_, "Unknown header %s", header.c_str());
+    // 受信塊から既知ヘッダの開始位置を全部拾う
+    std::vector<size_t> idxs;
+    for (size_t i = 0; i + 1 < inMsg.size(); ++i) {
+      if (is_known_header(inMsg, i)) idxs.push_back(i);
+    }
+    if (idxs.empty()) {
+      RCLCPP_WARN(logger_, "No known header in: '%s'", inMsg.c_str());
       return false;
     }
+    // 末尾番兵
+    idxs.push_back(inMsg.size());
+
+    bool handled_any = false;
+
+    for (size_t k = 0; k + 1 < idxs.size(); ++k) {
+      size_t beg = idxs[k];
+      size_t end = idxs[k + 1];
+      const std::string frame = inMsg.substr(beg, end - beg);
+      const std::string header = frame.substr(0, 2);
+
+      if (header == "DB") {
+        RCLCPP_DEBUG(logger_, "Debug: %s", frame.c_str());
+        handled_any = true;
+      } else if (header == "WN") {
+        RCLCPP_WARN(logger_, "Warning: %s", frame.c_str());
+        handled_any = true;
+      } else if (header == "ER") {
+        RCLCPP_INFO(logger_, "ERROR message: %s", frame.c_str());
+        return false;
+      } else if (header == "ST") {
+        checkInit(frame);
+        handled_any = true;
+        // 初期化目的の呼び出しでは ST を処理できたら戻ってOK
+        if (initialised_) return true;
+      } else if (header == "JC") {
+        updateEncoderCalibrations(frame);
+        handled_any = true;
+      } else if (header == "JP") {
+        updateJointPositions(frame);
+        handled_any = true;
+      } else if (header == "JV") {
+        updateJointVelocities(frame);
+        handled_any = true;
+      } else if (header == "ES") {
+        updateEStopStatus(frame);
+        handled_any = true;
+      }
+    }
+
+    if (handled_any) return true;
+
+    // ここに来るのは異常系（既知ヘッダが見えたのにどれも処理しなかった）
+    RCLCPP_WARN(logger_, "Unhandled frame(s): '%s'", inMsg.c_str());
+    return false;
   }
 }
+// ---- 受信分割対応 ここまで ----
 
 bool TeensyDriver::transmit(std::string msg, std::string& err) {
   boost::system::error_code ec;
   const auto sendBuffer = boost::asio::buffer(msg.c_str(), msg.size());
   boost::asio::write(serial_port_, sendBuffer, ec);
-
   if (!ec) return true;
   err = ec.message();
   return false;
 }
 
 void TeensyDriver::receive(std::string& inMsg) {
+  // 1 行読み（\n 終端）。ただし Teensy 側が CR のみでも、上の exchange 側で
+  // 連結フレームを切り出すので、ここは従来通りでOK。
   char c;
   std::string msg;
   bool eol = false;
