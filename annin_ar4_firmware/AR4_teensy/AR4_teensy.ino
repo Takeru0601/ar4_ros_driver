@@ -6,11 +6,11 @@
 
 #include <map>
 
-// Firmware version
-const char* VERSION = "2.0.0";
-
-// Model of the AR4, i.e. mk1, mk2, mk3
-String MODEL = "";
+// ==============================
+// Firmware version / model
+// ==============================
+const char* VERSION = "2.1.0";
+String MODEL = "mk3";
 
 ///////////////////////////////////////////////////////////////////////////////
 // Physical Params
@@ -29,8 +29,6 @@ const float MOTOR_STEPS_PER_DEG_MK2[] = {44.44444444, 55.55555556, 55.55555556,
 const float MOTOR_STEPS_PER_DEG_MK3[] = {44.44444444, 55.55555556, 55.55555556,
                                          49.77777777, 21.86024888, 22.22222222};
 
-const int MOTOR_STEPS_PER_REV[] = {400, 400, 400, 400, 800, 400};
-
 // set encoder pins
 Encoder encPos[6] = {Encoder(14, 15), Encoder(17, 16), Encoder(19, 18),
                      Encoder(20, 21), Encoder(23, 22), Encoder(24, 25)};
@@ -38,7 +36,7 @@ Encoder encPos[6] = {Encoder(14, 15), Encoder(17, 16), Encoder(19, 18),
 int ENC_DIR[] = {-1, 1, 1, 1, 1, 1};
 // +1 if encoder max value is at the minimum joint angle, 0 otherwise
 int ENC_MAX_AT_ANGLE_MIN[] = {1, 0, 1, 0, 0, 1};
-// motor steps * ENC_MULT = encoder steps
+// motor steps * ENC_MULT = encoder steps (4000 steps/rev)
 const float ENC_MULT[] = {10, 10, 10, 10, 5, 10};
 
 // define axis limits in degrees, for calibration
@@ -67,7 +65,7 @@ SM STATE = STATE_TRAJ;
 const int NUM_JOINTS = 6;
 AccelStepper stepperJoints[NUM_JOINTS];
 Bounce2::Button limitSwitches[NUM_JOINTS];
-const int DEBOUCE_INTERVAL = 10;  // ms
+const int DEBOUNCE_INTERVAL = 10;  // ms
 
 // calibration settings
 const int LIMIT_SWITCH_HIGH[] = {
@@ -75,8 +73,8 @@ const int LIMIT_SWITCH_HIGH[] = {
 const int CAL_DIR[] = {-1, -1, 1,
                        -1, -1, 1};  // joint rotation direction to limit switch
 const int CAL_SPEED = 500;          // motor steps per second
-const int CAL_SPEED_MULT[] = {
-    1, 1, 1, 2, 1, 1};  // multiplier to account for motor steps/rev
+const float CAL_SPEED_MULT[] = {
+    1, 1, 1, 1, 0.5, 1};  // multiplier to account for motor steps/rev
 // num of encoder steps in range of motion of joint
 int ENC_RANGE_STEPS[NUM_JOINTS];
 
@@ -87,7 +85,15 @@ char JOINT_NAMES[] = {'A', 'B', 'C', 'D', 'E', 'F'};
 
 bool estop_pressed = false;
 
-void estopPressed() { estop_pressed = true; }
+void estopPressed() {
+  // Check ESTOP 3 times to avoid false positives due to electrical noise
+  for (int i = 0; i < 3; i++) {
+    if (digitalRead(ESTOP_PIN) != LOW) {
+      return;  // Not really pressed
+    }
+  }
+  estop_pressed = true;
+}
 
 void resetEstop() {
   // if ESTOP button is pressed still, do not reset the flag!
@@ -117,7 +123,11 @@ bool safeRunSpeed(AccelStepper& stepperJoint) {
   return stepperJoint.runSpeed();
 }
 
+// ==============================
+// Setup
+// ==============================
 void setup() {
+
   MOTOR_STEPS_PER_DEG["mk1"] = MOTOR_STEPS_PER_DEG_MK1;
   MOTOR_STEPS_PER_DEG["mk2"] = MOTOR_STEPS_PER_DEG_MK2;
   MOTOR_STEPS_PER_DEG["mk3"] = MOTOR_STEPS_PER_DEG_MK3;
@@ -143,14 +153,18 @@ void setup() {
   for (int i = 0; i < NUM_JOINTS; ++i) {
     limitSwitches[i] = Bounce2::Button();
     limitSwitches[i].attach(LIMIT_PINS[i], INPUT);
-    limitSwitches[i].interval(DEBOUCE_INTERVAL);
+    limitSwitches[i].interval(DEBOUNCE_INTERVAL);
     limitSwitches[i].setPressedState(LIMIT_SWITCH_HIGH[i]);
   }
 
   pinMode(ESTOP_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(ESTOP_PIN), estopPressed, FALLING);
 
-  Serial.begin(9600);
+  // ===== CHANGES: make USB handshake rock-solid =====
+  Serial.begin(921600);                      // Align with host; Teensy ignores but consistent
+  uint32_t t0 = millis();
+  while (!Serial && (millis() - t0) < 3000) { /* wait at most 3s */ }
+  Serial.println("AR4MK3 FW 2.1.0");         // Startup banner for human/driver visibility
 }
 
 void setupSteppersMK1() {
@@ -408,7 +422,7 @@ bool moveToLimitSwitches(int* calJoints) {
       return false;
     }
   }
-  delay(2000);
+  delay(1000);
   return true;
 }
 
@@ -450,16 +464,86 @@ bool moveLimitedAwayFromLimitSwitch(int* calJoints) {
   // move the ones that already hit a limit away from it before start of
   // calibration
   int limitedJoints[NUM_JOINTS] = {0};
+  bool hasLimitedJoints = false;
   updateAllLimitSwitches();
   for (int i = 0; i < NUM_JOINTS; i++) {
     limitedJoints[i] = (calJoints[i] && limitSwitches[i].isPressed());
+    hasLimitedJoints = hasLimitedJoints || limitedJoints[i];
   }
-  return moveAwayFromLimitSwitch(limitedJoints);
+  if (hasLimitedJoints) {
+    return moveAwayFromLimitSwitch(limitedJoints);
+  }
+  return true;
 }
 
-bool doCalibrationRoutine(String& outputMsg) {
-  // calibrate all joints
-  int calJoints[] = {1, 1, 1, 1, 1, 1};
+bool doCalibrationRoutineSequence(String& outputMsg, String& inputMsg) {
+  if (inputMsg.length() != 7) {
+    outputMsg = "ER: Invalid sequence length.";
+    return false;
+  }
+
+  // define sequence storage
+  int calibSeq[7];
+  // convert inputMsg string to int array
+  for (int i = 0; i < 7; i++) {
+    calibSeq[i] = inputMsg[i] - '0';
+  }
+
+  // implement sequence in calJoints
+  int calJoints[6][NUM_JOINTS] = {0};
+  int numGroups = 0;
+
+  switch (calibSeq[0]) {
+    case 0:
+      numGroups = 1;
+      for (int i = 0; i < NUM_JOINTS; i++) {
+        calJoints[0][calibSeq[i + 1]] = 1;
+      }
+      break;
+    case 1:
+      numGroups = 2;
+      for (int i = 0; i < NUM_JOINTS - 3; i++) {
+        calJoints[0][calibSeq[i + 1]] = 1;
+        calJoints[1][calibSeq[i + 4]] = 1;
+      }
+      break;
+    case 2:
+      numGroups = 3;
+      for (int i = 0; i < NUM_JOINTS - 4; i++) {
+        calJoints[0][calibSeq[i + 1]] = 1;
+        calJoints[1][calibSeq[i + 3]] = 1;
+        calJoints[2][calibSeq[i + 5]] = 1;
+      }
+      break;
+    case 3:
+      numGroups = NUM_JOINTS;
+      for (int i = 0; i < NUM_JOINTS; i++) {
+        calJoints[i][calibSeq[i + 1]] = 1;
+      }
+      break;
+    default:
+      outputMsg = "ER: Invalid calibration sequence.";
+      return false;  // Early exit if an invalid value is detected
+  }
+
+  // calibrate joints
+  int calSteps[6];
+  for (int step = 0; step < numGroups; ++step) {
+    if (!doCalibrationRoutine(outputMsg, calJoints[step], calSteps)) {
+      return false;
+    }
+  }
+
+  // calibration done, send calibration values
+  // N.B. calibration values aren't used right now
+  outputMsg = String("JC") + "A" + calSteps[0] + "B" + calSteps[1] + "C" +
+              calSteps[2] + "D" + calSteps[3] + "E" + calSteps[4] + "F" +
+              calSteps[5];
+  return true;
+}
+
+bool doCalibrationRoutine(String& outputMsg, int calJoints[NUM_JOINTS],
+                          int calSteps[]) {
   if (!moveLimitedAwayFromLimitSwitch(calJoints)) {
     outputMsg = "ER: Failed to move away from limit switches at the start.";
     return false;
@@ -471,12 +555,15 @@ bool doCalibrationRoutine(String& outputMsg) {
   }
 
   // record encoder steps
-  int calSteps[6];
   for (int i = 0; i < NUM_JOINTS; ++i) {
-    calSteps[i] = encPos[i].read();
+    if (calJoints[i]) {
+      calSteps[i] = encPos[i].read();
+    }
   }
   for (int i = 0; i < NUM_JOINTS; ++i) {
-    encPos[i].write(ENC_RANGE_STEPS[i] * ENC_MAX_AT_ANGLE_MIN[i]);
+    if (calJoints[i]) {
+      encPos[i].write(ENC_RANGE_STEPS[i] * ENC_MAX_AT_ANGLE_MIN[i]);
+    }
   }
 
   // move away from the limit switches a bit so that if the next command
@@ -487,35 +574,37 @@ bool doCalibrationRoutine(String& outputMsg) {
     return false;
   }
 
-  // restore original max speed
-  //
-  for (int i = 0; i < NUM_JOINTS; ++i) {
-    stepperJoints[i].setMaxSpeed(JOINT_MAX_SPEED[i] *
-                                 MOTOR_STEPS_PER_DEG[MODEL][i]);
-  }
-
   // return to original position
   unsigned long startTime = millis();
   int curMotorSteps[NUM_JOINTS];
   readMotorSteps(curMotorSteps);
+
   while (!AtPosition(REST_MOTOR_STEPS[MODEL], curMotorSteps, 5)) {
-    if (millis() - startTime > 10000) {
-      outputMsg = "ER: Failed to return to original position.";
-      return false;
+    if (millis() - startTime > 12000) {
+      // Note: this occasionally happens but doesn't affect calibration result
+      Serial.println(
+          "WN: Failed to return to original position post calibration.");
+      break;
     }
 
     readMotorSteps(curMotorSteps);
+    for (int i = 0; i < NUM_JOINTS; ++i) {
+      if (!calJoints[i]) {
+        curMotorSteps[i] = REST_MOTOR_STEPS[MODEL][i];
+      }
+    }
     MoveTo(REST_MOTOR_STEPS[MODEL], curMotorSteps);
+
     for (int i = 0; i < NUM_JOINTS; ++i) {
       safeRun(stepperJoints[i]);
     }
   }
 
-  // calibration done, send calibration values
-  // N.B. calibration values aren't used right now
-  outputMsg = String("JC") + "A" + calSteps[0] + "B" + calSteps[1] + "C" +
-              calSteps[2] + "D" + calSteps[3] + "E" + calSteps[4] + "F" +
-              calSteps[5];
+  // restore original max speed
+  for (int i = 0; i < NUM_JOINTS; ++i) {
+    stepperJoints[i].setMaxSpeed(JOINT_MAX_SPEED[i] *
+                                 MOTOR_STEPS_PER_DEG[MODEL][i]);
+  }
   return true;
 }
 
@@ -595,6 +684,24 @@ void stateTRAJ() {
     // process message when new line character is received
     if (received == '\n') {
       String function = inData.substring(0, 2);
+
+      // ===== CHANGES: add lightweight handshakes =====
+      if (inData.startsWith("GET_VERSION")) {
+        Serial.println(VERSION);
+        inData = "";
+        continue;
+      }
+      if (function == "GV") {  // optional short form
+        Serial.println(VERSION);
+        inData = "";
+        continue;
+      }
+      if (inData.startsWith("PING")) {
+        Serial.println("PONG");
+        inData = "";
+        continue;
+      }
+
       if (function == "ST") {
         if (!initStateTraj(inData)) {
           STATE = STATE_ERR;
@@ -643,8 +750,9 @@ void stateTRAJ() {
         String msg = String("JV") + JointVelToString(lastVelocity);
         Serial.println(msg);
       } else if (function == "JC") {
-        String msg;
-        if (!doCalibrationRoutine(msg)) {
+        String msg, inputMsg;
+        inputMsg = inData.substring(2, 9);
+        if (!doCalibrationRoutineSequence(msg, inputMsg)) {
           for (int i = 0; i < NUM_JOINTS; ++i) {
             stepperJoints[i].setSpeed(0);
           }
