@@ -1,9 +1,20 @@
-cat > ~/ar4_ros_driver/annin_ar4_moveit_config/nudge_autolevel_abs.py <<'PY'
+cd ~/ar4_ros_driver/annin_ar4_moveit_config
+
+cat > nudge_autolevel_abs.py <<'PY'
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+nudge_autolevel_abs.py
+- Arduino(MMA8452)の roll/pitch をUSBシリアルから読み取り
+- 平均角(avg)から delta = -gain * avg を算出（deadband/limit付き）
+- /joint_states を読み「現在角＋delta」を“絶対角”として
+  /joint_trajectory_controller/follow_joint_trajectory に送信
+"""
 import argparse, math, re, time, sys
 from typing import List, Optional, Tuple
+
 import serial  # apt: python3-serial / pip: pyserial
+
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
@@ -17,20 +28,25 @@ ACTION_NAME = '/joint_trajectory_controller/follow_joint_trajectory'
 ROLL_PITCH_CSV = re.compile(r'^\s*(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)\s*$')
 def parse_roll_pitch(line: str) -> Optional[Tuple[float,float]]:
     m = ROLL_PITCH_CSV.match(line)
-    if m: return float(m.group(1)), float(m.group(3))
+    if m:
+        return float(m.group(1)), float(m.group(3))
     if '|' in line:
         try:
             right = line.split('|',1)[1]
             right = right.replace('roll:','').replace('pitch:',' ')
             parts = right.split()
-            if len(parts)>=2: return float(parts[0]), float(parts[1])
-        except Exception: return None
+            if len(parts)>=2:
+                return float(parts[0]), float(parts[1])
+        except Exception:
+            return None
     return None
 
 def read_sensor_average(port: str, baud: int, axis: str, samples: int, warmup_ms: int) -> float:
+    """axis='pitch' or 'roll' を平均[deg]で返す"""
     with serial.Serial(port, baud, timeout=1) as ser:
         t0=time.time()
-        while (time.time()-t0)*1000 < warmup_ms: ser.readline()
+        while (time.time()-t0)*1000 < warmup_ms:
+            ser.readline()
         vals=[]; t0=time.time()
         while len(vals)<samples and (time.time()-t0)<5.0:
             s=ser.readline().decode(errors='ignore').strip()
@@ -39,7 +55,8 @@ def read_sensor_average(port: str, baud: int, axis: str, samples: int, warmup_ms
             if rp is None: continue
             roll,pitch=rp
             vals.append(pitch if axis=='pitch' else roll)
-        if not vals: raise RuntimeError('No sensor samples parsed. Check format/port.')
+        if not vals:
+            raise RuntimeError('No sensor samples parsed. Check format/port.')
         return sum(vals)/len(vals)
 
 class OneShotJointState(Node):
@@ -78,7 +95,8 @@ class JTCClient(Node):
         self.get_logger().info(f'Sending ABS to {joint_names}: {["%.6f"%x for x in target_rad]} in {duration:.3f}s')
         gf=self.client.send_goal_async(goal); rclpy.spin_until_future_complete(self,gf)
         gh=gf.result()
-        if not gh or not gh.accepted: raise RuntimeError('Goal rejected by controller')
+        if not gh or not gh.accepted:
+            raise RuntimeError('Goal rejected by controller')
         rf=gh.get_result_async(); rclpy.spin_until_future_complete(self,rf)
         res=rf.result().result; self.get_logger().info(f'Result error_code: {res.error_code}')
 
@@ -97,7 +115,8 @@ def main():
     args=ap.parse_args()
 
     avg=read_sensor_average(args.port,args.baud,args.axis,args.samples,args.warmup_ms)
-    delta=-args.gain*avg;  delta = -delta if args.invert else delta
+    delta=-args.gain*avg
+    if args.invert: delta = -delta
     if abs(avg)<args.deadband: delta=0.0
     if abs(delta)>args.limit: delta=math.copysign(args.limit,delta)
     print(f"[sensor] {args.axis} avg = {avg:.3f} deg")
@@ -129,4 +148,5 @@ def main():
 
 if __name__=='__main__': main()
 PY
-chmod +x ~/ar4_ros_driver/annin_ar4_moveit_config/nudge_autolevel_abs.py
+
+chmod +x nudge_autolevel_abs.py
